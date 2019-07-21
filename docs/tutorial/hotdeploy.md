@@ -8,8 +8,8 @@ The sample java app used is from this [repo](https://tomcat.apache.org/tomcat-7.
 Below creates a java application using advanced statefulset.
 
 ```
-kubectl apply -f https://raw.githubusercontent.com/furykerry/kruise/master/docs/tutorial/v1/tomcat-sts-for-hotdeply-demo.yaml
-kubectl apply -f https://raw.githubusercontent.com/furykerry/kruise/master/docs/tutorial/v1/tomcat-svc-with-samplewar.yaml
+kubectl apply -f https://raw.githubusercontent.com/furykerry/kruise/sidecar-tutorial/docs/tutorial/v1/tomcat-sts-for-hotdeply-demo.yaml
+kubectl apply -f https://raw.githubusercontent.com/furykerry/kruise/sidecar-tutorial/docs/tutorial/v1/tomcat-svc-with-samplewar.yaml
 ```
 
 Several things to note in the `tomcat-sts-for-hotdeply-demo.yaml`
