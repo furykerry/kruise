@@ -1,0 +1,55 @@
+apiVersion: apps.kruise.io/v1alpha1
+kind: StatefulSet
+metadata:
+  name: tomcat-with-samplewar
+  labels:
+    app: tomcat
+    version: "1.0"
+spec:
+  replicas: 1
+  serviceName: tomcat-with-samplewar
+  selector:
+    matchLabels:
+      app.kubernetes.io/name:  tomcat-with-samplewar
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name:  tomcat-with-samplewar
+        version: "1.0"
+    spec:
+      readinessGates:
+        # A new condition that ensures the pod remains at NotReady state while the in-place update is happening
+        - conditionType: InPlaceUpdateReady
+      containers:
+      - name: tomcat
+        image: tomcat:8.0
+        volumeMounts:
+        - mountPath: /usr/local/tomcat/webapps/samplewar
+          name: share-volume
+        ports:
+        - name: http-server
+          containerPort: 3000
+      - name: data
+        image: openkruise/guestbook:warv1
+        command: ["/bin/sh", "-c", "tail -f /dev/null"]
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - "/bin/sh"
+              - "-c"
+              - "if [ ! -f .only-copy-once ]; then unzip -x  /webapps/sample.war -o -d /shared/webapps/samplewar; fi; touch .only-copy-once "
+        volumeMounts:
+        - mountPath: /shared/webapps/samplewar
+          name: share-volume
+      volumes:
+      - name: share-volume
+        emptyDir: {}
+  podManagementPolicy: Parallel  # allow parallel updates, works together with maxUnavailable
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Do in-place update if possible, currently only image update is supported for in-place update
+      podUpdatePolicy: InPlaceIfPossible
+      # Allow parallel updates with max number of unavailable instances equals to 2
+      maxUnavailable: 3

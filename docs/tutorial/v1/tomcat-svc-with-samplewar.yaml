@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: tomcat-with-samplewar
+  name: tomcat-with-samplewar
+spec:
+  externalTrafficPolicy: Cluster
+  ports:
+  - port: 8080
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/name: tomcat-with-samplewar
+  sessionAffinity: None
+  type: LoadBalancer
