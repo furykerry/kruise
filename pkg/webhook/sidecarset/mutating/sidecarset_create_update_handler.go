@@ -22,14 +22,15 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/openkruise/kruise/apis/apps/defaults"
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	"github.com/openkruise/kruise/pkg/control/sidecarcontrol"
-	"github.com/openkruise/kruise/pkg/util"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/openkruise/kruise/apis/apps/defaults"
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	"github.com/openkruise/kruise/pkg/control/sidecarcontrol"
+	"github.com/openkruise/kruise/pkg/util"
 )
 
 // SidecarSetCreateHandler handles SidecarSet
@@ -82,7 +83,7 @@ func (h *SidecarSetCreateHandler) Handle(ctx context.Context, req admission.Requ
 			return admission.Errored(http.StatusInternalServerError, err)
 		}
 	}
-	klog.V(4).Infof("sidecarset after mutating: %v", util.DumpJSON(obj))
+	klog.V(4).InfoS("sidecarset after mutating", "object", util.DumpJSON(obj))
 	if reflect.DeepEqual(obj, copy) {
 		return admission.Allowed("")
 	}
@@ -100,11 +101,3 @@ func (h *SidecarSetCreateHandler) Handle(ctx context.Context, req admission.Requ
 //	h.Client = c
 //	return nil
 //}
-
-var _ admission.DecoderInjector = &SidecarSetCreateHandler{}
-
-// InjectDecoder injects the decoder into the SidecarSetCreateHandler
-func (h *SidecarSetCreateHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
-}

@@ -17,11 +17,11 @@ limitations under the License.
 package crd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"reflect"
 
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"reflect"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
@@ -30,8 +30,12 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/klog/v2"
 
 	"github.com/openkruise/kruise/apis"
+	"github.com/openkruise/kruise/pkg/features"
+	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
 	webhookutil "github.com/openkruise/kruise/pkg/webhook/util"
 )
 
@@ -49,7 +53,26 @@ func Ensure(client apiextensionsclientset.Interface, lister apiextensionslisters
 		return fmt.Errorf("failed to list crds: %v", err)
 	}
 
-	webhookConfig := apiextensionsv1.WebhookClientConfig{
+	if utilfeature.DefaultFeatureGate.Enabled(features.EnableExternalCerts) {
+		for _, crd := range crdList {
+			if len(crd.Spec.Versions) == 0 || crd.Spec.Conversion == nil || crd.Spec.Conversion.Strategy != apiextensionsv1.WebhookConverter {
+				continue
+			}
+			if !kruiseScheme.Recognizes(schema.GroupVersionKind{Group: crd.Spec.Group, Version: crd.Spec.Versions[0].Name, Kind: crd.Spec.Names.Kind}) {
+				continue
+			}
+
+			if crd.Spec.Conversion.Webhook == nil || crd.Spec.Conversion.Webhook.ClientConfig == nil {
+				return fmt.Errorf("bad conversion configuration of CRD %s", crd.Name)
+			}
+
+			if !bytes.Equal(crd.Spec.Conversion.Webhook.ClientConfig.CABundle, caBundle) {
+				return fmt.Errorf("caBundle of CRD %s does not match external caBundle", crd.Name)
+			}
+		}
+		return nil
+	}
+	webhookConfig := &apiextensionsv1.WebhookClientConfig{
 		CABundle: caBundle,
 	}
 	path := "/convert"
@@ -83,7 +106,9 @@ func Ensure(client apiextensionsclientset.Interface, lister apiextensionslisters
 			if _, err := client.ApiextensionsV1().CustomResourceDefinitions().Update(context.TODO(), newCRD, metav1.UpdateOptions{}); err != nil {
 				return fmt.Errorf("failed to update CRD %s: %v", newCRD.Name, err)
 			}
+			klog.InfoS("Update caBundle success", "CustomResourceDefinitions", klog.KObj(newCRD))
 		}
 	}
+
 	return nil
 }

@@ -19,12 +19,13 @@ package mutating
 import (
 	"context"
 
-	"github.com/openkruise/kruise/pkg/control/pubcontrol"
-	"github.com/openkruise/kruise/pkg/controller/podunavailablebudget"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/openkruise/kruise/pkg/control/pubcontrol"
+	"github.com/openkruise/kruise/pkg/controller/podunavailablebudget"
 )
 
 // mutating relate-pub annotation in pod
@@ -43,6 +44,6 @@ func (h *PodCreateHandler) pubMutatingPod(ctx context.Context, req admission.Req
 		pod.Annotations = map[string]string{}
 	}
 	pod.Annotations[pubcontrol.PodRelatedPubAnnotation] = pub.Name
-	klog.V(3).Infof("mutating add pod(%s/%s) annotation[%s]=%s", pod.Namespace, pod.Name, pubcontrol.PodRelatedPubAnnotation, pub.Name)
+	klog.V(3).InfoS("mutating add pod annotation", "namespace", pod.Namespace, "name", pod.Name, "key", pubcontrol.PodRelatedPubAnnotation, "value", pub.Name)
 	return false, nil
 }

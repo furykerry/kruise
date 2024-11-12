@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -39,6 +41,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -50,8 +53,14 @@ import (
 )
 
 var (
-	scheme      *runtime.Scheme
-	defaultTime = time.Now()
+	scheme *runtime.Scheme
+
+	cloneSetDemo = &appsv1alpha1.CloneSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cloneset-test",
+			Namespace: "default",
+		},
+	}
 
 	podDemo = &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -63,9 +72,9 @@ var (
 					APIVersion:         "apps.kruise.io/v1alpha1",
 					Kind:               "CloneSet",
 					Name:               "cloneset-test",
-					Controller:         utilpointer.BoolPtr(true),
+					Controller:         ptr.To(true),
 					UID:                types.UID("a03eb001-27eb-4713-b634-7c46f6861758"),
-					BlockOwnerDeletion: utilpointer.BoolPtr(true),
+					BlockOwnerDeletion: ptr.To(true),
 				},
 			},
 		},
@@ -89,9 +98,9 @@ var (
 					APIVersion:         "apps/v1",
 					Kind:               "Deployment",
 					Name:               "workload-xyz",
-					Controller:         utilpointer.BoolPtr(true),
+					Controller:         ptr.To(true),
 					UID:                types.UID("a03eb001-27eb-4713-b634-7c46f6861758"),
-					BlockOwnerDeletion: utilpointer.BoolPtr(true),
+					BlockOwnerDeletion: ptr.To(true),
 				},
 			},
 		},
@@ -472,10 +481,14 @@ func TestWorkloadSpreadCreatePodWithoutFullName(t *testing.T) {
 }
 
 func TestWorkloadSpreadMutatingPod(t *testing.T) {
+	defaultErrorHandler := func(err error) bool {
+		return err == nil
+	}
 	cases := []struct {
 		name                 string
 		getPod               func() *corev1.Pod
 		getWorkloadSpread    func() *appsv1alpha1.WorkloadSpread
+		errorHandler         func(err error) bool // errorHandler returns true means the error is expected
 		getOperation         func() Operation
 		expectPod            func() *corev1.Pod
 		expectWorkloadSpread func() *appsv1alpha1.WorkloadSpread
@@ -557,7 +570,7 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 				workloadSpread := workloadSpreadDemo.DeepCopy()
 				workloadSpread.ResourceVersion = "1"
 				workloadSpread.Status.SubsetStatuses[0].MissingReplicas = 4
-				workloadSpread.Status.SubsetStatuses[0].CreatingPods[podDemo.Name] = metav1.Time{Time: defaultTime}
+				workloadSpread.Status.SubsetStatuses[0].CreatingPods[podDemo.Name] = metav1.Time{Time: time.Now()}
 				workloadSpread.Status.VersionedSubsetStatuses = map[string][]appsv1alpha1.WorkloadSpreadSubsetStatus{
 					VersionIgnored: workloadSpread.Status.SubsetStatuses,
 				}
@@ -802,7 +815,7 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 			getWorkloadSpread: func() *appsv1alpha1.WorkloadSpread {
 				demo := workloadSpreadDemo.DeepCopy()
 				demo.Status.SubsetStatuses[0].MissingReplicas = 4
-				demo.Status.SubsetStatuses[0].CreatingPods[podDemo.Name] = metav1.Time{Time: defaultTime}
+				demo.Status.SubsetStatuses[0].CreatingPods[podDemo.Name] = metav1.Time{Time: time.Now()}
 				demo.Status.VersionedSubsetStatuses = map[string][]appsv1alpha1.WorkloadSpreadSubsetStatus{
 					VersionIgnored: demo.Status.SubsetStatuses,
 				}
@@ -877,7 +890,7 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 				workloadSpread := workloadSpreadDemo.DeepCopy()
 				workloadSpread.ResourceVersion = "1"
 				workloadSpread.Status.SubsetStatuses[0].MissingReplicas = 4
-				workloadSpread.Status.SubsetStatuses[0].CreatingPods[podDemo.Name] = metav1.Time{Time: defaultTime}
+				workloadSpread.Status.SubsetStatuses[0].CreatingPods[podDemo.Name] = metav1.Time{Time: time.Now()}
 				workloadSpread.Status.VersionedSubsetStatuses = map[string][]appsv1alpha1.WorkloadSpreadSubsetStatus{
 					VersionIgnored: workloadSpread.Status.SubsetStatuses,
 				}
@@ -910,7 +923,7 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 			expectWorkloadSpread: func() *appsv1alpha1.WorkloadSpread {
 				workloadSpread := workloadSpreadDemo.DeepCopy()
 				workloadSpread.Status.SubsetStatuses[0].MissingReplicas = 1
-				workloadSpread.Status.SubsetStatuses[0].DeletingPods[podDemo.Name] = metav1.Time{Time: defaultTime}
+				workloadSpread.Status.SubsetStatuses[0].DeletingPods[podDemo.Name] = metav1.Time{Time: time.Now()}
 				workloadSpread.Status.VersionedSubsetStatuses = map[string][]appsv1alpha1.WorkloadSpreadSubsetStatus{
 					VersionIgnored: workloadSpread.Status.SubsetStatuses,
 				}
@@ -943,7 +956,7 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 			expectWorkloadSpread: func() *appsv1alpha1.WorkloadSpread {
 				workloadSpread := workloadSpreadDemo.DeepCopy()
 				workloadSpread.Status.SubsetStatuses[0].MissingReplicas = 1
-				workloadSpread.Status.SubsetStatuses[0].DeletingPods[podDemo.Name] = metav1.Time{Time: defaultTime}
+				workloadSpread.Status.SubsetStatuses[0].DeletingPods[podDemo.Name] = metav1.Time{Time: time.Now()}
 				workloadSpread.Status.VersionedSubsetStatuses = map[string][]appsv1alpha1.WorkloadSpreadSubsetStatus{
 					VersionIgnored: workloadSpread.Status.SubsetStatuses,
 				}
@@ -1024,7 +1037,7 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 			getWorkloadSpread: func() *appsv1alpha1.WorkloadSpread {
 				demo := workloadSpreadDemo.DeepCopy()
 				demo.Status.SubsetStatuses[0].MissingReplicas = 1
-				demo.Status.SubsetStatuses[0].DeletingPods[podDemo.Name] = metav1.Time{Time: defaultTime}
+				demo.Status.SubsetStatuses[0].DeletingPods[podDemo.Name] = metav1.Time{Time: time.Now()}
 				demo.Status.VersionedSubsetStatuses = map[string][]appsv1alpha1.WorkloadSpreadSubsetStatus{
 					VersionIgnored: demo.Status.SubsetStatuses,
 				}
@@ -1041,7 +1054,7 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 			expectWorkloadSpread: func() *appsv1alpha1.WorkloadSpread {
 				workloadSpread := workloadSpreadDemo.DeepCopy()
 				workloadSpread.Status.SubsetStatuses[0].MissingReplicas = 1
-				workloadSpread.Status.SubsetStatuses[0].DeletingPods[podDemo.Name] = metav1.Time{Time: defaultTime}
+				workloadSpread.Status.SubsetStatuses[0].DeletingPods[podDemo.Name] = metav1.Time{Time: time.Now()}
 				workloadSpread.Status.VersionedSubsetStatuses = map[string][]appsv1alpha1.WorkloadSpreadSubsetStatus{
 					VersionIgnored: workloadSpread.Status.SubsetStatuses,
 				}
@@ -1080,12 +1093,40 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 				return workloadSpread
 			},
 		},
+		{
+			name: "operation = create, pod owner reference replicaset not found",
+			getPod: func() *corev1.Pod {
+				pod := podDemo.DeepCopy()
+				pod.OwnerReferences[0].Name = "not-exist"
+				return pod
+			},
+			getWorkloadSpread: func() *appsv1alpha1.WorkloadSpread {
+				return workloadSpreadDemo.DeepCopy()
+			},
+			getOperation: func() Operation {
+				return CreateOperation
+			},
+			expectPod: func() *corev1.Pod {
+				pod := podDemo.DeepCopy()
+				pod.OwnerReferences[0].Name = "not-exist"
+				return pod
+			},
+			expectWorkloadSpread: func() *appsv1alpha1.WorkloadSpread {
+				return workloadSpreadDemo.DeepCopy()
+			},
+			errorHandler: func(err error) bool {
+				return errors.IsNotFound(err)
+			},
+		},
 	}
 	for _, cs := range cases {
 		t.Run(cs.name, func(t *testing.T) {
 			podIn := cs.getPod()
 			workloadSpreadIn := cs.getWorkloadSpread()
-			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workloadSpreadIn).Build()
+			expectWS := cs.expectWorkloadSpread()
+			podExpect := cs.expectPod()
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(workloadSpreadIn, cloneSetDemo).WithStatusSubresource(&appsv1alpha1.WorkloadSpread{}).Build()
 			handler := NewWorkloadSpreadHandler(fakeClient)
 
 			var err error
@@ -1097,15 +1138,18 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 			case EvictionOperation:
 				err = handler.HandlePodDeletion(podIn, EvictionOperation)
 			}
-			//err := handler.WorkloadSpreadMutatingPod(cs.getOperation(), podIn)
-			if err != nil {
-				t.Fatalf("WorkloadSpreadMutatingPod failed: %s", err.Error())
+			errHandler := cs.errorHandler
+			if errHandler == nil {
+				errHandler = defaultErrorHandler
+			}
+			if !errHandler(err) {
+				t.Fatalf("WorkloadSpreadMutatingPod errHandler failed: %v", err)
 			}
 			podInBy, _ := json.Marshal(podIn)
-			expectPodBy, _ := json.Marshal(cs.expectPod())
+			expectPodBy, _ := json.Marshal(podExpect)
 			if !reflect.DeepEqual(podInBy, expectPodBy) {
-				fmt.Println(podIn.Annotations)
-				fmt.Println(cs.expectPod().Annotations)
+				t.Logf("actual annotations: %+v", podIn.Annotations)
+				t.Logf("expect annotations: %+v", podExpect.Annotations)
 				t.Fatalf("pod DeepEqual failed")
 			}
 			latestWS, err := getLatestWorkloadSpread(fakeClient, workloadSpreadIn)
@@ -1113,24 +1157,74 @@ func TestWorkloadSpreadMutatingPod(t *testing.T) {
 				t.Fatalf("getLatestWorkloadSpread failed: %s", err.Error())
 			}
 			setWorkloadSpreadSubset(latestWS)
-			statusby1, _ := json.Marshal(latestWS.Status.VersionedSubsetStatuses)
-			statusby2, _ := json.Marshal(cs.expectWorkloadSpread().Status.VersionedSubsetStatuses)
-			if !reflect.DeepEqual(statusby1, statusby2) {
-				fmt.Println(latestWS.Status)
-				fmt.Println(cs.expectWorkloadSpread().Status)
+			if !compareVersionedSubsetStatuses(latestWS.Status.VersionedSubsetStatuses, expectWS.Status.VersionedSubsetStatuses) {
+				t.Logf("actual ws status: %+v", latestWS.Status.VersionedSubsetStatuses)
+				t.Logf("expect ws status: %+v", expectWS.Status.VersionedSubsetStatuses)
 				t.Fatalf("workloadSpread DeepEqual failed")
 			}
-			util.GlobalCache.Delete(workloadSpreadIn)
+			_ = util.GlobalCache.Delete(workloadSpreadIn)
 		})
 	}
 }
 
+func compareVersionedSubsetStatuses(actual, expect map[string][]appsv1alpha1.WorkloadSpreadSubsetStatus) bool {
+	if len(actual) != len(expect) {
+		return false
+	}
+	for key, statusListActual := range actual {
+		statusListExpect, ok := expect[key]
+		if !ok {
+			return false
+		}
+		if len(statusListActual) != len(statusListExpect) {
+			return false
+		}
+		for i, statusActual := range statusListActual {
+			statusExpect := statusListExpect[i]
+			if !compareTimeMap(statusActual.CreatingPods, statusExpect.CreatingPods) {
+				return false
+			}
+			if !compareTimeMap(statusActual.DeletingPods, statusExpect.DeletingPods) {
+				return false
+			}
+			statusActual.CreatingPods, statusExpect.CreatingPods = nil, nil
+			statusActual.DeletingPods, statusExpect.DeletingPods = nil, nil
+			if !reflect.DeepEqual(statusActual, statusExpect) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func compareTimeMap(actual, expect map[string]metav1.Time) bool {
+	if len(actual) != len(expect) {
+		return false
+	}
+	for key, tActual := range actual {
+		tExpect, ok := expect[key]
+		if !ok {
+			return false
+		}
+		if tActual.Sub(tExpect.Time) <= -time.Second {
+			// tActual and tExpect are both from time.Now, and tExpect is called before tActual. so this comparison is to make sure
+			// tActual is later than tExpect.
+			// moreover, tExpect is the raw value of that time.Now returns, and tActual will be serialized and deserailized by client.
+			// In K8s object serialization, only second-level precision for timestamps is retained,
+			// so 1 second is reserved to prevent error during comparison between values like 2024-10-08T06:00:47Z and 2024-10-08T06:00:47.04353Z
+			return false
+		}
+	}
+	return true
+}
+
 func TestIsReferenceEqual(t *testing.T) {
 	cases := []struct {
-		name         string
-		getTargetRef func() *appsv1alpha1.TargetReference
-		getOwnerRef  func() *metav1.OwnerReference
-		expectEqual  bool
+		name          string
+		getTargetRef  func() *appsv1alpha1.TargetReference
+		getOwnerRef   func() *metav1.OwnerReference
+		expectEqual   bool
+		errorExpected func(err error) bool
 	}{
 		{
 			name: "ApiVersion, Kind, Name equals",
@@ -1204,13 +1298,59 @@ func TestIsReferenceEqual(t *testing.T) {
 			},
 			expectEqual: false,
 		},
+		{
+			name: "target ApiVersion parse failed",
+			getTargetRef: func() *appsv1alpha1.TargetReference {
+				return &appsv1alpha1.TargetReference{
+					APIVersion: "apps.kruise.io/v1alpha1/yahaha",
+					Kind:       "CloneSet",
+					Name:       "test-1",
+				}
+			},
+			getOwnerRef: func() *metav1.OwnerReference {
+				return &metav1.OwnerReference{
+					APIVersion: "apps.kruise.io/v1alpha1",
+					Kind:       "CloneSet",
+					Name:       "test-2",
+				}
+			},
+			expectEqual: false,
+			errorExpected: func(err error) bool {
+				return strings.Contains(err.Error(), "unexpected GroupVersion string: apps.kruise.io/v1alpha1/yahaha")
+			},
+		},
+		{
+			name: "owner ApiVersion parse failed",
+			getTargetRef: func() *appsv1alpha1.TargetReference {
+				return &appsv1alpha1.TargetReference{
+					APIVersion: "apps.kruise.io/v1alpha1",
+					Kind:       "CloneSet",
+					Name:       "test-1",
+				}
+			},
+			getOwnerRef: func() *metav1.OwnerReference {
+				return &metav1.OwnerReference{
+					APIVersion: "apps.kruise.io/v1alpha1/yahaha",
+					Kind:       "CloneSet",
+					Name:       "test-2",
+				}
+			},
+			expectEqual: false,
+			errorExpected: func(err error) bool {
+				return strings.Contains(err.Error(), "unexpected GroupVersion string: apps.kruise.io/v1alpha1/yahaha")
+			},
+		},
 	}
 
 	for _, cs := range cases {
 		t.Run(cs.name, func(t *testing.T) {
 			h := Handler{fake.NewClientBuilder().Build()}
-			if h.isReferenceEqual(cs.getTargetRef(), cs.getOwnerRef(), "") != cs.expectEqual {
+			ok, err := h.isReferenceEqual(cs.getTargetRef(), cs.getOwnerRef(), "")
+			if ok != cs.expectEqual {
 				t.Fatalf("isReferenceEqual failed")
+			}
+			if cs.errorExpected != nil && !cs.errorExpected(err) {
+				t.Fatalf("isReferenceEqual failed with error: %v", err)
 			}
 		})
 	}
@@ -1349,7 +1489,7 @@ func TestIsReferenceEqual2(t *testing.T) {
 			handler := &Handler{Client: cli}
 			workloadsInWhiteListInitialized = false
 			initializeWorkloadsInWhiteList(cli)
-			result := handler.isReferenceEqual(&ref, metav1.GetControllerOf(pod), pod.GetNamespace())
+			result, _ := handler.isReferenceEqual(&ref, metav1.GetControllerOf(pod), pod.GetNamespace())
 			if result != cs.Expect {
 				t.Fatalf("got unexpected result")
 			}
@@ -1447,18 +1587,18 @@ func TestFilterReference(t *testing.T) {
 		APIVersion:         "apps.kruise.io/v1alpha1",
 		Kind:               "CloneSet",
 		Name:               "cloneset-test",
-		Controller:         utilpointer.BoolPtr(true),
+		Controller:         ptr.To(true),
 		UID:                types.UID("a03eb001-27eb-4713-b634-7c46f6861758"),
-		BlockOwnerDeletion: utilpointer.BoolPtr(true),
+		BlockOwnerDeletion: ptr.To(true),
 	}
 
 	rsRef := &metav1.OwnerReference{
 		APIVersion:         "apps/v1",
 		Kind:               "ReplicaSet",
 		Name:               "rs-test",
-		Controller:         utilpointer.BoolPtr(true),
+		Controller:         ptr.To(true),
 		UID:                types.UID("a03eb001-27eb-4713-b634-7c46f6861758"),
-		BlockOwnerDeletion: utilpointer.BoolPtr(true),
+		BlockOwnerDeletion: ptr.To(true),
 	}
 
 	refs := []*metav1.OwnerReference{csRef, rsRef}
@@ -1929,10 +2069,10 @@ func setWorkloadSpreadSubset(workloadSpread *appsv1alpha1.WorkloadSpread) {
 			subset.CreatingPods = map[string]metav1.Time{}
 		}
 		for k := range subset.CreatingPods {
-			subset.CreatingPods[k] = metav1.Time{Time: defaultTime}
+			subset.CreatingPods[k] = metav1.Time{Time: time.Now()}
 		}
 		for k := range subset.DeletingPods {
-			subset.DeletingPods[k] = metav1.Time{Time: defaultTime}
+			subset.DeletingPods[k] = metav1.Time{Time: time.Now()}
 		}
 	}
 }

@@ -20,14 +20,14 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/openkruise/kruise/pkg/util"
-	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 	admissionv1 "k8s.io/api/admission/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/openkruise/kruise/pkg/util"
+	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 )
 
 type NamespaceHandler struct {
@@ -45,7 +45,7 @@ func (h *NamespaceHandler) Handle(ctx context.Context, req admission.Request) ad
 		return admission.ValidationResponse(true, "")
 	}
 	if len(req.OldObject.Raw) == 0 {
-		klog.Warningf("Skip to validate namespace %s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Name)
+		klog.InfoS("Skip to validate namespace deletion for no old object, maybe because of Kubernetes version < 1.16", "name", req.Name)
 		return admission.ValidationResponse(true, "")
 	}
 	obj := &v1.Namespace{}
@@ -58,18 +58,4 @@ func (h *NamespaceHandler) Handle(ctx context.Context, req admission.Request) ad
 		return admission.Errored(http.StatusForbidden, err)
 	}
 	return admission.ValidationResponse(true, "")
-}
-
-var _ inject.Client = &NamespaceHandler{}
-
-func (h *NamespaceHandler) InjectClient(c client.Client) error {
-	h.Client = c
-	return nil
-}
-
-var _ admission.DecoderInjector = &NamespaceHandler{}
-
-func (h *NamespaceHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
 }

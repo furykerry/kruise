@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/openkruise/kruise/apis"
@@ -60,6 +62,8 @@ func TestMain(m *testing.M) {
 }
 
 var (
+	always = corev1.ContainerRestartPolicyAlways
+
 	sidecarSet1 = &appsv1alpha1.SidecarSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "sidecarset1",
@@ -109,6 +113,43 @@ var (
 						Type: appsv1alpha1.ShareVolumePolicyDisabled,
 					},
 				},
+			},
+		},
+	}
+
+	sidecarSetWithInitContainer = &appsv1alpha1.SidecarSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				sidecarcontrol.SidecarSetHashAnnotation: "c4k2dbb95d",
+			},
+			Name:   "sidecarset",
+			Labels: map[string]string{},
+		},
+		Spec: appsv1alpha1.SidecarSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": "suxing-test",
+				},
+			},
+			InitContainers: []appsv1alpha1.SidecarContainer{
+				{
+					Container: corev1.Container{
+						Name:  "dns-e",
+						Image: "dns-e-image:1.0",
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "volume-1"},
+						},
+					},
+					TransferEnv: []appsv1alpha1.TransferEnvVar{
+						{
+							SourceContainerName: "nginx",
+							EnvName:             "hello2",
+						},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{Name: "volume-1"},
 			},
 		},
 	}
@@ -423,7 +464,7 @@ func testPodHasNoMatchedSidecarSet(t *testing.T, sidecarSetIn *appsv1alpha1.Side
 	podIn := pod1.DeepCopy()
 	podIn.Labels["app"] = "doesnt-match"
 	podOut := podIn.DeepCopy()
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(sidecarSetIn).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -467,7 +508,7 @@ func doMergeSidecarSecretsTest(t *testing.T, sidecarSetIn *appsv1alpha1.SidecarS
 	podIn := pod1.DeepCopy()
 	podIn.Spec.ImagePullSecrets = podImagePullSecrets
 	podOut := podIn.DeepCopy()
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(sidecarSetIn).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -490,7 +531,7 @@ func testInjectionStrategyPaused(t *testing.T, sidecarIn *appsv1alpha1.SidecarSe
 	podOut := podIn.DeepCopy()
 	sidecarPaused := sidecarIn
 	sidecarPaused.Spec.InjectionStrategy.Paused = true
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(sidecarPaused).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -530,7 +571,7 @@ func TestInjectMetadata(t *testing.T) {
 			},
 		},
 	}
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(demo1, demo2).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -588,6 +629,7 @@ func TestInjectionStrategyRevision(t *testing.T) {
 				Namespace: webhookutil.GetNamespace(),
 				Name:      revisionID,
 				Labels: map[string]string{
+					sidecarcontrol.SidecarSetKindName:         sidecarSet1.GetName(),
 					appsv1alpha1.SidecarSetCustomVersionLabel: revisionID,
 				},
 			},
@@ -602,7 +644,7 @@ func TestInjectionStrategyRevision(t *testing.T) {
 func testInjectionStrategyRevision(t *testing.T, env []client.Object) {
 	podIn := pod1.DeepCopy()
 	podOut := podIn.DeepCopy()
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(env...).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -623,9 +665,137 @@ func TestSidecarSetPodInjectPolicy(t *testing.T) {
 	testSidecarSetPodInjectPolicy(t, sidecarSetIn)
 }
 
+func TestCanarySidecarSetInjection(t *testing.T) {
+	podStable := pod1.DeepCopy()
+	podCanary := podStable.DeepCopy()
+	podCanary.Labels["canary"] = "true"
+
+	stableImage := "sidecar-image:stable"
+	canaryImage := "sidecar-image:canary"
+	sidecarSetName := "sidecarset1"
+
+	// a canary sidecarset contains both updatestrategy.selector and injectionstrategy.revision
+	revisionID := fmt.Sprintf("%s-12345", sidecarSetName)
+	sidecarSetCanary := &appsv1alpha1.SidecarSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: sidecarSetName,
+		},
+		Spec: appsv1alpha1.SidecarSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": "demo",
+				},
+			},
+			Containers: []appsv1alpha1.SidecarContainer{
+				{
+					Container: corev1.Container{
+						Name:  "sidecar",
+						Image: canaryImage,
+					},
+				},
+			},
+			UpdateStrategy: appsv1alpha1.SidecarSetUpdateStrategy{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"canary": "true"},
+				},
+			},
+			InjectionStrategy: appsv1alpha1.SidecarSetInjectionStrategy{
+				Revision: &appsv1alpha1.SidecarSetInjectRevision{
+					CustomVersion: &revisionID,
+					Policy:        appsv1alpha1.AlwaysSidecarSetInjectRevisionPolicy,
+				},
+			},
+		},
+	}
+
+	specRaw, _ := json.Marshal(map[string]interface{}{
+		"spec": map[string]interface{}{
+			"$patch": "replace",
+			"containers": []appsv1alpha1.SidecarContainer{
+				{
+					Container: corev1.Container{
+						Name:  "sidecar",
+						Image: stableImage,
+					},
+				},
+			},
+		},
+	})
+
+	revision := &apps.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: webhookutil.GetNamespace(),
+			Name:      revisionID,
+			Labels: map[string]string{
+				sidecarcontrol.SidecarSetKindName:         sidecarSet1.GetName(),
+				appsv1alpha1.SidecarSetCustomVersionLabel: revisionID,
+			},
+		},
+		Data: runtime.RawExtension{
+			Raw: specRaw,
+		},
+	}
+
+	stablePod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-pod-stable",
+			Labels: map[string]string{
+				"app": "demo",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "app",
+					Image: "demo",
+				},
+			},
+		},
+	}
+
+	canaryPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-pod-canary",
+			Labels: map[string]string{
+				"app":    "demo",
+				"canary": "true",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "app",
+					Image: "demo",
+				},
+			},
+		},
+	}
+
+	decoder := admission.NewDecoder(scheme.Scheme)
+	testClient := fake.NewClientBuilder().WithObjects(revision, sidecarSetCanary).WithIndex(
+		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
+	).Build()
+	podHandler := &PodCreateHandler{Decoder: decoder, Client: testClient}
+	req := newAdmission(admissionv1.Create, runtime.RawExtension{}, runtime.RawExtension{}, "")
+	if _, err := podHandler.sidecarsetMutatingPod(context.Background(), req, stablePod); err != nil {
+		t.Fatalf("failed to mutating pod, err: %v", err)
+	}
+	if _, err := podHandler.sidecarsetMutatingPod(context.Background(), req, canaryPod); err != nil {
+		t.Fatalf("failed to mutating pod, err: %v", err)
+	}
+	if len(stablePod.Spec.Containers) != 2 || stablePod.Spec.Containers[1].Image != stableImage {
+		t.Fatalf("inject stable sidecar failed")
+	}
+	fmt.Printf("stable sidecar image: %s\n", stablePod.Spec.Containers[1].Image)
+	if len(canaryPod.Spec.Containers) != 2 || canaryPod.Spec.Containers[1].Image != canaryImage {
+		t.Fatalf("inject canary sidecar failed")
+	}
+	fmt.Printf("canary sidecar image: %s\n", canaryPod.Spec.Containers[1].Image)
+}
+
 func testSidecarSetPodInjectPolicy(t *testing.T, sidecarSetIn *appsv1alpha1.SidecarSet) {
 	podIn := pod1.DeepCopy()
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(sidecarSetIn).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -704,7 +874,7 @@ func TestSidecarVolumesAppend(t *testing.T) {
 func testSidecarVolumesAppend(t *testing.T, sidecarSetIn *appsv1alpha1.SidecarSet) {
 	podIn := pod1.DeepCopy()
 
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(sidecarSetIn).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -859,7 +1029,7 @@ func testPodVolumeMountsAppend(t *testing.T, sidecarSetIn *appsv1alpha1.SidecarS
 	for _, cs := range cases {
 		t.Run(cs.name, func(t *testing.T) {
 			podIn := cs.getPod()
-			decoder, _ := admission.NewDecoder(scheme.Scheme)
+			decoder := admission.NewDecoder(scheme.Scheme)
 			client := fake.NewClientBuilder().WithObjects(cs.getSidecarSets()).WithIndex(
 				&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 			).Build()
@@ -905,7 +1075,8 @@ func TestSidecarSetTransferEnv(t *testing.T) {
 
 func testSidecarSetTransferEnv(t *testing.T, sidecarSetIn *appsv1alpha1.SidecarSet) {
 	podIn := pod1.DeepCopy()
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	sidecarSetIn.Spec.InitContainers[0].PodInjectPolicy = ""
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(sidecarSetIn).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -917,7 +1088,7 @@ func testSidecarSetTransferEnv(t *testing.T, sidecarSetIn *appsv1alpha1.SidecarS
 		t.Fatalf("inject sidecar into pod failed, err: %v", err)
 	}
 	if len(podOut.Spec.InitContainers[1].Env) != 2 {
-		t.Fatalf("expect 2 envs but got %v", len(podOut.Spec.InitContainers[0].Env))
+		t.Fatalf("expect 2 envs but got %v", len(podOut.Spec.InitContainers[1].Env))
 	}
 	if podOut.Spec.InitContainers[1].Env[1].Value != "world2" {
 		t.Fatalf("expect env with value 'world2' but got %v", podOut.Spec.Containers[0].Env[1].Value)
@@ -941,7 +1112,7 @@ func testSidecarSetHashInject(t *testing.T, sidecarSetIn1 *appsv1alpha1.SidecarS
 	sidecarSetIn2 := sidecarsetWithTransferEnv.DeepCopy()
 	sidecarSetIn3 := sidecarSet3.DeepCopy()
 
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(sidecarSetIn1, sidecarSetIn2, sidecarSetIn3).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -974,7 +1145,7 @@ func TestSidecarSetNameInject(t *testing.T) {
 
 func testSidecarSetNameInject(t *testing.T, sidecarSetIn1, sidecarSetIn3 *appsv1alpha1.SidecarSet) {
 	podIn := pod1.DeepCopy()
-	decoder, _ := admission.NewDecoder(scheme.Scheme)
+	decoder := admission.NewDecoder(scheme.Scheme)
 	client := fake.NewClientBuilder().WithObjects(sidecarSetIn1, sidecarSetIn3).WithIndex(
 		&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
 	).Build()
@@ -1088,12 +1259,258 @@ func TestMergeSidecarContainers(t *testing.T) {
 			expectContainerLen: 4,
 			expectedContainers: []string{"new-sidecar-1", "sidecar-1", "app-container", "sidecar-2"},
 		},
+		{
+			name: "origin no sidecar, sidecar have new containers",
+			getOrigins: func() []corev1.Container {
+				return nil
+			},
+			getInjected: func() []*appsv1alpha1.SidecarContainer {
+				return sidecarContainers
+			},
+			expectContainerLen: 3,
+			expectedContainers: []string{"new-sidecar-1", "sidecar-1", "sidecar-2"},
+		},
 	}
 
 	for _, cs := range cases {
 		t.Run(cs.name, func(t *testing.T) {
 			origins := cs.getOrigins()
 			injected := cs.getInjected()
+			finals := mergeSidecarContainers(origins, injected)
+			if len(finals) != cs.expectContainerLen {
+				t.Fatalf("expect %d containers but got %v", cs.expectContainerLen, len(finals))
+			}
+			for index, cName := range cs.expectedContainers {
+				if finals[index].Name != cName {
+					t.Fatalf("expect index(%d) container(%s) but got %s", index, cName, finals[index].Name)
+				}
+			}
+		})
+	}
+}
+
+func TestInjectInitContainer(t *testing.T) {
+	cases := []struct {
+		name                     string
+		getSidecarSets           func() []*appsv1alpha1.SidecarSet
+		getPod                   func() *corev1.Pod
+		expectedPod              func() *corev1.Pod
+		expectedInitContainerLen int
+	}{
+		{
+			name: "inject initContainers-1",
+			getSidecarSets: func() []*appsv1alpha1.SidecarSet {
+				obj1 := sidecarSetWithInitContainer.DeepCopy()
+				obj1.Name = "sidecarset-1"
+				obj1.Annotations[sidecarcontrol.SidecarSetHashAnnotation] = "sidecarset-1-hash"
+				obj1.Annotations[sidecarcontrol.SidecarSetHashWithoutImageAnnotation] = "sidecarset-1-without-image-hash"
+				obj1.Spec.InitContainers[0].Name = "init-1"
+				obj1.Spec.InitContainers[0].RestartPolicy = &always
+				obj2 := sidecarSetWithInitContainer.DeepCopy()
+				obj2.Name = "sidecarset-2"
+				obj2.Annotations[sidecarcontrol.SidecarSetHashAnnotation] = "sidecarset-2-hash"
+				obj2.Annotations[sidecarcontrol.SidecarSetHashWithoutImageAnnotation] = "sidecarset-2-without-image-hash"
+				obj2.Spec.InitContainers[0].Name = "hot-init"
+				obj2.Spec.InitContainers[0].RestartPolicy = &always
+				obj2.Spec.InitContainers[0].UpgradeStrategy.UpgradeType = appsv1alpha1.SidecarContainerHotUpgrade
+				obj2.Spec.InitContainers[0].UpgradeStrategy.HotUpgradeEmptyImage = "empty:v1"
+				return []*appsv1alpha1.SidecarSet{obj1, obj2}
+			},
+			getPod: func() *corev1.Pod {
+				obj := pod1.DeepCopy()
+				return obj
+			},
+			expectedPod: func() *corev1.Pod {
+				obj := pod1.DeepCopy()
+				obj.Annotations = map[string]string{}
+				sidecarSetHash := make(map[string]sidecarcontrol.SidecarSetUpgradeSpec)
+				sidecarSetHashWithoutImage := make(map[string]sidecarcontrol.SidecarSetUpgradeSpec)
+				sidecarSetHash["sidecarset-1"] = sidecarcontrol.SidecarSetUpgradeSpec{
+					UpdateTimestamp: metav1.Now(),
+					SidecarSetHash:  "sidecarset-1-hash",
+					SidecarSetName:  "sidecarset-1",
+					SidecarList:     []string{"init-1"},
+				}
+				sidecarSetHash["sidecarset-2"] = sidecarcontrol.SidecarSetUpgradeSpec{
+					UpdateTimestamp: metav1.Now(),
+					SidecarSetHash:  "sidecarset-2-hash",
+					SidecarSetName:  "sidecarset-2",
+					SidecarList:     []string{"hot-init"},
+				}
+				sidecarSetHashWithoutImage["sidecarset-1"] = sidecarcontrol.SidecarSetUpgradeSpec{
+					UpdateTimestamp: metav1.Now(),
+					SidecarSetHash:  "sidecarset-1-without-image-hash",
+					SidecarSetName:  "sidecarset-1",
+					SidecarList:     []string{"init-1"},
+				}
+				sidecarSetHashWithoutImage["sidecarset-2"] = sidecarcontrol.SidecarSetUpgradeSpec{
+					UpdateTimestamp: metav1.Now(),
+					SidecarSetHash:  "sidecarset-2-without-image-hash",
+					SidecarSetName:  "sidecarset-2",
+					SidecarList:     []string{"hot-init"},
+				}
+				by, _ := json.Marshal(sidecarSetHash)
+				obj.Annotations[sidecarcontrol.SidecarSetHashAnnotation] = string(by)
+				by, _ = json.Marshal(sidecarSetHashWithoutImage)
+				obj.Annotations[sidecarcontrol.SidecarSetHashWithoutImageAnnotation] = string(by)
+				// store matched sidecarset list in pod annotations
+				obj.Annotations[sidecarcontrol.SidecarSetListAnnotation] = "sidecarset-1,sidecarset-2"
+				hotUpgradeWorkInfo := map[string]string{
+					"hot-init": "hot-init-1",
+				}
+				by, _ = json.Marshal(hotUpgradeWorkInfo)
+				obj.Annotations[sidecarcontrol.SidecarSetWorkingHotUpgradeContainer] = string(by)
+				obj.Annotations[sidecarcontrol.GetPodSidecarSetVersionAnnotation("hot-init-1")] = "1"
+				obj.Annotations[sidecarcontrol.GetPodSidecarSetVersionAltAnnotation("hot-init-1")] = "0"
+				// "0" indicates sidecar container is hot upgrade empty container
+				obj.Annotations[sidecarcontrol.GetPodSidecarSetVersionAnnotation("hot-init-2")] = "0"
+				obj.Annotations[sidecarcontrol.GetPodSidecarSetVersionAltAnnotation("hot-init-2")] = "1"
+				obj.Spec.Volumes = append(obj.Spec.Volumes, corev1.Volume{Name: "volume-1"})
+				return obj
+			},
+			expectedInitContainerLen: 4,
+		},
+	}
+
+	for _, cs := range cases {
+		t.Run(cs.name, func(t *testing.T) {
+			decoder := admission.NewDecoder(scheme.Scheme)
+			ss := cs.getSidecarSets()
+			client := fake.NewClientBuilder().WithObjects(ss[0], ss[1]).WithIndex(
+				&appsv1alpha1.SidecarSet{}, fieldindex.IndexNameForSidecarSetNamespace, fieldindex.IndexSidecarSet,
+			).Build()
+			pod := cs.getPod()
+			podHandler := &PodCreateHandler{Decoder: decoder, Client: client}
+			req := newAdmission(admissionv1.Create, runtime.RawExtension{}, runtime.RawExtension{}, "")
+			_, err := podHandler.sidecarsetMutatingPod(context.Background(), req, pod)
+			if err != nil {
+				t.Fatalf("inject sidecar into pod failed, err: %v", err)
+			}
+			if !reflect.DeepEqual(pod.Annotations, cs.expectedPod().Annotations) {
+				t.Fatalf("expect(%s), but get(%s)", util.DumpJSON(cs.expectedPod()), util.DumpJSON(pod))
+			}
+			if len(pod.Spec.InitContainers) != cs.expectedInitContainerLen {
+				t.Fatalf("expect(%d), but get(%d)", cs.expectedInitContainerLen, len(pod.Spec.InitContainers))
+			}
+		})
+	}
+}
+
+func TestInjectInitContainerSort(t *testing.T) {
+	cases := []struct {
+		name               string
+		getOrigins         func() []corev1.Container
+		getInjected        func() []*appsv1alpha1.SidecarContainer
+		expectContainerLen int
+		expectedContainers []string
+	}{
+		{
+			name: "origins nil, inject containers(a, b, c)",
+			getOrigins: func() []corev1.Container {
+				return nil
+			},
+			getInjected: func() []*appsv1alpha1.SidecarContainer {
+				return []*appsv1alpha1.SidecarContainer{
+					{
+						Container: corev1.Container{
+							Name: "a-init",
+						},
+					},
+					{
+						Container: corev1.Container{
+							Name: "c-init",
+						},
+					},
+					{
+						Container: corev1.Container{
+							Name: "b-init",
+						},
+					},
+				}
+			},
+			expectContainerLen: 3,
+			expectedContainers: []string{"a-init", "b-init", "c-init"},
+		},
+		{
+			name: "origin init, inject containers(a, b, c)",
+			getOrigins: func() []corev1.Container {
+				return []corev1.Container{
+					{
+						Name: "app1-init",
+					},
+					{
+						Name: "app2-init",
+					},
+				}
+			},
+			getInjected: func() []*appsv1alpha1.SidecarContainer {
+				return []*appsv1alpha1.SidecarContainer{
+					{
+						Container: corev1.Container{
+							Name: "a-init",
+						},
+					},
+					{
+						Container: corev1.Container{
+							Name: "c-init",
+						},
+					},
+					{
+						Container: corev1.Container{
+							Name: "b-init",
+						},
+					},
+				}
+			},
+			expectContainerLen: 5,
+			expectedContainers: []string{"app1-init", "app2-init", "a-init", "b-init", "c-init"},
+		},
+		{
+			name: "origins nil, inject containers(a, b, c)-2",
+			getOrigins: func() []corev1.Container {
+				return []corev1.Container{
+					{
+						Name: "app1-init",
+					},
+					{
+						Name: "app2-init",
+					},
+				}
+			},
+			getInjected: func() []*appsv1alpha1.SidecarContainer {
+				return []*appsv1alpha1.SidecarContainer{
+					{
+						Container: corev1.Container{
+							Name: "a-init",
+						},
+						PodInjectPolicy: appsv1alpha1.AfterAppContainerType,
+					},
+					{
+						Container: corev1.Container{
+							Name: "c-init",
+						},
+						PodInjectPolicy: appsv1alpha1.BeforeAppContainerType,
+					},
+					{
+						Container: corev1.Container{
+							Name: "b-init",
+						},
+						PodInjectPolicy: appsv1alpha1.BeforeAppContainerType,
+					},
+				}
+			},
+			expectContainerLen: 5,
+			expectedContainers: []string{"b-init", "c-init", "app1-init", "app2-init", "a-init"},
+		},
+	}
+
+	for _, cs := range cases {
+		t.Run(cs.name, func(t *testing.T) {
+			origins := cs.getOrigins()
+			injected := cs.getInjected()
+			sort.SliceStable(injected, func(i, j int) bool {
+				return injected[i].Name < injected[j].Name
+			})
 			finals := mergeSidecarContainers(origins, injected)
 			if len(finals) != cs.expectContainerLen {
 				t.Fatalf("expect %d containers but got %v", cs.expectContainerLen, len(finals))

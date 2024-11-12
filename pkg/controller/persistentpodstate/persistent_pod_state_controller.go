@@ -27,13 +27,6 @@ import (
 
 	ctrlUtil "github.com/openkruise/kruise/pkg/controller/util"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
-	"github.com/openkruise/kruise/pkg/util"
-	utilclient "github.com/openkruise/kruise/pkg/util/client"
-	"github.com/openkruise/kruise/pkg/util/controllerfinder"
-	"github.com/openkruise/kruise/pkg/util/discovery"
-	"github.com/openkruise/kruise/pkg/util/ratelimiter"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -51,6 +44,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
+	"github.com/openkruise/kruise/pkg/util"
+	utilclient "github.com/openkruise/kruise/pkg/util/client"
+	"github.com/openkruise/kruise/pkg/util/controllerfinder"
+	"github.com/openkruise/kruise/pkg/util/discovery"
+	"github.com/openkruise/kruise/pkg/util/ratelimiter"
 )
 
 func init() {
@@ -104,22 +105,22 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	}
 
 	// Watch for changes to Pod
-	if err = c.Watch(&source.Kind{Type: &corev1.Pod{}}, &enqueueRequestForPod{reader: mgr.GetClient(), client: mgr.GetClient()}); err != nil {
+	if err = c.Watch(source.Kind(mgr.GetCache(), &corev1.Pod{}), &enqueueRequestForPod{reader: mgr.GetClient(), client: mgr.GetClient()}); err != nil {
 		return err
 	}
 
 	// watch for changes to PersistentPodState
-	if err = c.Watch(&source.Kind{Type: &appsv1alpha1.PersistentPodState{}}, &handler.EnqueueRequestForObject{}); err != nil {
+	if err = c.Watch(source.Kind(mgr.GetCache(), &appsv1alpha1.PersistentPodState{}), &handler.EnqueueRequestForObject{}); err != nil {
 		return err
 	}
 
 	// watch for changes to StatefulSet
-	if err = c.Watch(&source.Kind{Type: &appsv1.StatefulSet{}}, &enqueueRequestForStatefulSet{reader: mgr.GetClient()}); err != nil {
+	if err = c.Watch(source.Kind(mgr.GetCache(), &appsv1.StatefulSet{}), &enqueueRequestForStatefulSet{reader: mgr.GetClient()}); err != nil {
 		return err
 	}
 
 	// watch for changes to kruise StatefulSet
-	if err = c.Watch(&source.Kind{Type: &appsv1beta1.StatefulSet{}}, &enqueueRequestForKruiseStatefulSet{reader: mgr.GetClient()}); err != nil {
+	if err = c.Watch(source.Kind(mgr.GetCache(), &appsv1beta1.StatefulSet{}), &enqueueRequestForKruiseStatefulSet{reader: mgr.GetClient()}); err != nil {
 		return err
 	}
 
@@ -130,7 +131,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	if whiteList != nil {
 		workloadHandler := &enqueueRequestForStatefulSetLike{reader: mgr.GetClient()}
 		for _, workload := range whiteList.Workloads {
-			if _, err := ctrlUtil.AddWatcherDynamically(c, workloadHandler, workload, "PPS"); err != nil {
+			if _, err := ctrlUtil.AddWatcherDynamically(mgr, c, workloadHandler, workload, "PPS"); err != nil {
 				return err
 			}
 		}
@@ -186,7 +187,7 @@ func (r *ReconcilePersistentPodState) Reconcile(_ context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	klog.V(3).Infof("begin to reconcile PersistentPodState(%s/%s)", persistentPodState.Namespace, persistentPodState.Name)
+	klog.V(3).InfoS("Begin to reconcile PersistentPodState", "persistentPodState", klog.KObj(persistentPodState))
 	pods, innerSts, err := r.getPodsAndStatefulset(persistentPodState)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -198,7 +199,7 @@ func (r *ReconcilePersistentPodState) Reconcile(_ context.Context, req ctrl.Requ
 		return ctrl.Result{}, r.updatePersistentPodStateStatus(persistentPodState, newStatus)
 	}
 
-	klog.V(3).Infof("reconcile statefulset(%s/%s) length(%d) pods for PersistentPodState", persistentPodState.Namespace, persistentPodState.Name, len(pods))
+	klog.V(3).InfoS("Reconcile statefulset pods for PersistentPodState", "persistentPodState", klog.KObj(persistentPodState), "podCount", len(pods))
 	newStatus := persistentPodState.Status.DeepCopy()
 	newStatus.ObservedGeneration = persistentPodState.Generation
 	if newStatus.PodStates == nil {
@@ -255,8 +256,7 @@ func (r *ReconcilePersistentPodState) Reconcile(_ context.Context, req ctrl.Requ
 		for podName := range newStatus.PodStates {
 			index, err := parseStsPodIndex(podName)
 			if err != nil {
-				klog.Errorf("parse PersistentPodState(%s/%s) podName(%s) failed: %s",
-					persistentPodState.Namespace, persistentPodState.Name, podName, err.Error())
+				klog.ErrorS(err, "Failed to parse PersistentPodState podName", "persistentPodState", klog.KObj(persistentPodState), "podName", podName)
 				continue
 			}
 			if isInStatefulSetReplicas(index, innerSts) {
@@ -285,10 +285,10 @@ func (r *ReconcilePersistentPodState) updatePersistentPodStateStatus(pps *appsv1
 		persistentPodStateClone.Status = newStatus
 		return r.Client.Status().Update(context.TODO(), persistentPodStateClone)
 	}); err != nil {
-		klog.Errorf("update PersistentPodState(%s/%s) status failed: %s", pps.Namespace, pps.Name, err.Error())
+		klog.ErrorS(err, "Failed to update PersistentPodState status", "persistentPodState", klog.KObj(pps))
 		return err
 	}
-	klog.V(3).Infof("update PersistentPodState(%s/%s) status pods(%d) -> pod(%d) success", pps.Namespace, pps.Name, len(pps.Status.PodStates), len(newStatus.PodStates))
+	klog.V(3).InfoS("Updated PersistentPodState status success", "persistentPodState", klog.KObj(pps), "oldPodStatesCount", len(pps.Status.PodStates), "newPodStatesCount", len(newStatus.PodStates))
 	return nil
 }
 
@@ -303,7 +303,7 @@ func (r *ReconcilePersistentPodState) getPodsAndStatefulset(persistentPodState *
 	ref := persistentPodState.Spec.TargetReference
 	workload, err := r.finder.GetScaleAndSelectorForRef(ref.APIVersion, ref.Kind, persistentPodState.Namespace, ref.Name, "")
 	if err != nil {
-		klog.Errorf("persistentPodState(%s/%s) fetch statefulSet(%s) failed: %s", persistentPodState.Namespace, persistentPodState.Name, ref.Name, err.Error())
+		klog.ErrorS(err, "PersistentPodState fetch statefulSet failed", "persistentPodState", klog.KObj(persistentPodState), "statefulSetName", ref.Name)
 		return nil, nil, err
 	} else if workload == nil {
 		return nil, nil, nil
@@ -315,7 +315,7 @@ func (r *ReconcilePersistentPodState) getPodsAndStatefulset(persistentPodState *
 	// DisableDeepCopy:true, indicates must be deep copy before update pod objection
 	pods, _, err := r.finder.GetPodsForRef(ref.APIVersion, ref.Kind, persistentPodState.Namespace, ref.Name, true)
 	if err != nil {
-		klog.Errorf("list persistentPodState(%s/%s) pods failed: %s", persistentPodState.Namespace, persistentPodState.Name, err.Error())
+		klog.ErrorS(err, "Failed to list persistentPodState pods", "persistentPodState", klog.KObj(persistentPodState))
 		return nil, nil, err
 	}
 	matchedPods := make(map[string]*corev1.Pod, len(pods))
@@ -336,7 +336,7 @@ func (r *ReconcilePersistentPodState) getPodState(pod *corev1.Pod, nodeTopologyK
 	node := &corev1.Node{}
 	err := r.Get(context.TODO(), client.ObjectKey{Name: pod.Spec.NodeName}, node)
 	if err != nil {
-		klog.Errorf("fetch pod(%s/%s) node(%s) error %s", pod.Namespace, pod.Name, pod.Spec.NodeName, err.Error())
+		klog.ErrorS(err, "Fetched node of pod error", "pod", klog.KObj(pod), "nodeName", pod.Spec.NodeName)
 		return podState, err
 	}
 	podState.NodeName = pod.Spec.NodeName
@@ -373,7 +373,7 @@ func (r *ReconcilePersistentPodState) autoGeneratePersistentPodState(req ctrl.Re
 	// example for generate#apps/v1#StatefulSet#echoserver
 	arr := strings.Split(req.Name, "#")
 	if len(arr) != 4 {
-		klog.Warningf("Reconcile PersistentPodState workload(%s) is invalid", req.Name)
+		klog.InfoS("Reconcile PersistentPodState workload is invalid", "workload", req)
 		return nil
 	}
 	// fetch workload
@@ -382,7 +382,7 @@ func (r *ReconcilePersistentPodState) autoGeneratePersistentPodState(req ctrl.Re
 	if err != nil {
 		return err
 	} else if workload == nil {
-		klog.Warningf("Reconcile PersistentPodState workload(%s) is Not Found", req.Name)
+		klog.InfoS("Reconcile PersistentPodState workload is Not Found", "workload", req)
 		return nil
 	}
 	// fetch persistentPodState crd
@@ -400,7 +400,7 @@ func (r *ReconcilePersistentPodState) autoGeneratePersistentPodState(req ctrl.Re
 	if workload.Metadata.Annotations[appsv1alpha1.AnnotationAutoGeneratePersistentPodState] == "true" {
 		if workload.Metadata.Annotations[appsv1alpha1.AnnotationRequiredPersistentTopology] == "" &&
 			workload.Metadata.Annotations[appsv1alpha1.AnnotationPreferredPersistentTopology] == "" {
-			klog.Warningf("statefulSet(%s/%s) persistentPodState annotation is incomplete", workload.Metadata.Namespace, workload.Name)
+			klog.InfoS("StatefulSet persistentPodState annotation was incomplete", "statefulSet", klog.KRef(workload.Metadata.Namespace, workload.Name))
 			return nil
 		}
 
@@ -413,7 +413,7 @@ func (r *ReconcilePersistentPodState) autoGeneratePersistentPodState(req ctrl.Re
 				}
 				return err
 			}
-			klog.V(3).Infof("create StatefulSet(%s/%s) persistentPodState(%s) success", ns, name, util.DumpJSON(newObj))
+			klog.V(3).InfoS("Created StatefulSet persistentPodState success", "statefulSet", klog.KRef(ns, name), "persistentPodState", klog.KObj(newObj))
 			return nil
 		}
 		// compare with old object
@@ -428,11 +428,11 @@ func (r *ReconcilePersistentPodState) autoGeneratePersistentPodState(req ctrl.Re
 			objClone.Spec = *newObj.Spec.DeepCopy()
 			return r.Client.Update(context.TODO(), objClone)
 		}); err != nil {
-			klog.Errorf("update persistentPodState(%s/%s) failed: %s", newObj.Namespace, newObj.Name, err.Error())
+			klog.ErrorS(err, "Failed to update persistentPodState", "persistentPodState", klog.KObj(newObj))
 			return err
 		}
-		klog.V(3).Infof("update persistentPodState(%s/%s) from(%s) -> to(%s) success", newObj.Namespace, newObj.Name,
-			util.DumpJSON(oldObj.Spec), util.DumpJSON(newObj.Spec))
+		klog.V(3).InfoS("Updated persistentPodState success", "persistentPodState", klog.KObj(newObj), "oldSpec",
+			util.DumpJSON(oldObj.Spec), "newSpec", util.DumpJSON(newObj.Spec))
 		return nil
 	}
 
@@ -443,7 +443,7 @@ func (r *ReconcilePersistentPodState) autoGeneratePersistentPodState(req ctrl.Re
 	if err = r.Delete(context.TODO(), oldObj); err != nil {
 		return err
 	}
-	klog.V(3).Infof("delete StatefulSet(%s/%s) persistentPodState done", ns, name)
+	klog.V(3).InfoS("Deleted StatefulSet persistentPodState", "statefulSet", klog.KRef(ns, name))
 	return nil
 }
 

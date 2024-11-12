@@ -18,14 +18,16 @@ package validating
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	"github.com/openkruise/kruise/pkg/features"
+	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
 )
 
 // WorkloadSpreadCreateUpdateHandler handles WorkloadSpread
@@ -46,7 +48,9 @@ var _ admission.Handler = &WorkloadSpreadCreateUpdateHandler{}
 func (h *WorkloadSpreadCreateUpdateHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	obj := &appsv1alpha1.WorkloadSpread{}
 	oldObj := &appsv1alpha1.WorkloadSpread{}
-
+	if !utilfeature.DefaultFeatureGate.Enabled(features.WorkloadSpread) {
+		return admission.Errored(http.StatusForbidden, fmt.Errorf("feature-gate %s is not enabled", features.WorkloadSpread))
+	}
 	switch req.AdmissionRequest.Operation {
 	case admissionv1.Create:
 		if err := h.Decoder.Decode(req, obj); err != nil {
@@ -71,20 +75,4 @@ func (h *WorkloadSpreadCreateUpdateHandler) Handle(ctx context.Context, req admi
 	}
 
 	return admission.ValidationResponse(true, "")
-}
-
-var _ inject.Client = &WorkloadSpreadCreateUpdateHandler{}
-
-// InjectClient injects the client into the WorkloadSpreadCreateUpdateHandler
-func (h *WorkloadSpreadCreateUpdateHandler) InjectClient(c client.Client) error {
-	h.Client = c
-	return nil
-}
-
-var _ admission.DecoderInjector = &WorkloadSpreadCreateUpdateHandler{}
-
-// InjectDecoder injects the decoder into the WorkloadSpreadCreateUpdateHandler
-func (h *WorkloadSpreadCreateUpdateHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
 }

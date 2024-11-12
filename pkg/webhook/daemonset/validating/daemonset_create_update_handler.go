@@ -73,7 +73,7 @@ func (h *DaemonSetCreateUpdateHandler) Handle(ctx context.Context, req admission
 		}
 		allowed, reason, err := validatingDaemonSetFn(ctx, obj)
 		if err != nil {
-			klog.Warningf("ds %s/%s action %v fail:%s", obj.Namespace, obj.Name, req.AdmissionRequest.Operation, err.Error())
+			klog.ErrorS(err, "validate daemonset failed", "namespace", obj.Namespace, "name", obj.Name, "operation", req.AdmissionRequest.Operation)
 			return admission.Errored(http.StatusInternalServerError, err)
 		}
 		return admission.ValidationResponse(allowed, reason)
@@ -93,12 +93,4 @@ func (h *DaemonSetCreateUpdateHandler) Handle(ctx context.Context, req admission
 	}
 
 	return admission.ValidationResponse(true, "")
-}
-
-var _ admission.DecoderInjector = &DaemonSetCreateUpdateHandler{}
-
-// InjectDecoder injects the decoder into the DaemonSetCreateUpdateHandler
-func (h *DaemonSetCreateUpdateHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
 }

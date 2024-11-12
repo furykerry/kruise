@@ -42,6 +42,7 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/controller/history"
 	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 var _ = SIGDescribe("SidecarSet", func() {
@@ -565,6 +566,89 @@ var _ = SIGDescribe("SidecarSet", func() {
 			}
 			ginkgo.By("sidecarSet inject pod sidecar container transfer Envs with downward API by metadata.annotations done")
 		})
+
+		// currently skip
+		// todo
+		/*framework.ConformanceIt("sidecarSet inject initContainer with restartPolicy=Always", func() {
+			always := corev1.ContainerRestartPolicyAlways
+			// create sidecarSet
+			sidecarSet := tester.NewBaseSidecarSet(ns)
+			sidecarSet.Spec.Containers = nil
+			sidecarSet.Spec.InitContainers = nil
+			obj1 := sidecarSet.DeepCopy()
+			obj1.Name = "sidecarset-1"
+			obj1.Spec.InitContainers = []appsv1alpha1.SidecarContainer{
+				{
+					Container: corev1.Container{
+						Name:          "init-1",
+						Command:       []string{"/bin/sh", "-c", "sleep 1000000"},
+						Image:         "busybox:latest",
+						RestartPolicy: &always,
+					},
+				},
+			}
+			ginkgo.By("Creating SidecarSet failed")
+			_, err := kc.AppsV1alpha1().SidecarSets().Create(context.TODO(), obj1, metav1.CreateOptions{})
+			gomega.Expect(err).To(gomega.HaveOccurred())
+			obj1.Spec.UpdateStrategy.Type = appsv1alpha1.NotUpdateSidecarSetStrategyType
+			obj2 := sidecarSet.DeepCopy()
+			obj2.Spec.UpdateStrategy.Type = appsv1alpha1.NotUpdateSidecarSetStrategyType
+			obj2.Name = "sidecarset-2"
+			obj2.Spec.InitContainers = []appsv1alpha1.SidecarContainer{
+				{
+					Container: corev1.Container{
+						Name:          "hot-init",
+						Image:         "openkruise/hotupgrade-sample:sidecarv1",
+						RestartPolicy: &always,
+						Lifecycle: &corev1.Lifecycle{
+							PostStart: &corev1.LifecycleHandler{
+								Exec: &corev1.ExecAction{
+									Command: []string{"/bin/sh", "/migrate.sh"},
+								},
+							},
+						},
+					},
+					UpgradeStrategy: appsv1alpha1.SidecarContainerUpgradeStrategy{
+						UpgradeType:          appsv1alpha1.SidecarContainerHotUpgrade,
+						HotUpgradeEmptyImage: "openkruise/hotupgrade-sample:empty",
+					},
+				},
+			}
+			ginkgo.By("Creating SidecarSet success")
+			_, err = tester.CreateSidecarSet(obj1)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			_, err = tester.CreateSidecarSet(obj2)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			time.Sleep(time.Second)
+
+			// create deployment
+			deploymentIn := tester.NewBaseDeployment(ns)
+			deploymentIn.Spec.Template.ObjectMeta.Annotations = map[string]string{
+				"biz": "main",
+			}
+			deploymentIn.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+				{
+					Name:  "POD_NAME",
+					Value: "bar",
+				},
+				{
+					Name:  "OD_NAME",
+					Value: "od_name",
+				},
+				{
+					Name:  "PROXY_IP",
+					Value: "127.0.0.1",
+				},
+			}
+			ginkgo.By(fmt.Sprintf("Creating Deployment(%s/%s)", deploymentIn.Namespace, deploymentIn.Name))
+			tester.CreateDeployment(deploymentIn)
+			// get pods
+			pods, err := tester.GetSelectorPods(deploymentIn.Namespace, deploymentIn.Spec.Selector)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			podIn := pods[0]
+			gomega.Expect(podIn.Spec.InitContainers).To(gomega.HaveLen(3))
+			ginkgo.By("sidecarSet inject pod sidecar container transfer Envs with downward API by metadata.annotations done")
+		})*/
 	})
 
 	framework.KruiseDescribe("SidecarSet Upgrade functionality [SidecarSeUpgrade]", func() {
@@ -770,6 +854,11 @@ var _ = SIGDescribe("SidecarSet", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			for _, pod := range pods {
 				origin := sets.String{}
+				for _, sidecar := range sidecarSetIn.Spec.InitContainers {
+					if sidecarcontrol.IsSidecarContainer(sidecar.Container) {
+						origin.Insert(sidecar.Name)
+					}
+				}
 				for _, sidecar := range sidecarSetIn.Spec.Containers {
 					origin.Insert(sidecar.Name)
 				}
@@ -816,6 +905,11 @@ var _ = SIGDescribe("SidecarSet", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			for _, pod := range pods {
 				origin := sets.String{}
+				for _, sidecar := range sidecarSetIn.Spec.InitContainers {
+					if sidecarcontrol.IsSidecarContainer(sidecar.Container) {
+						origin.Insert(sidecar.Name)
+					}
+				}
 				for _, sidecar := range sidecarSetIn.Spec.Containers {
 					origin.Insert(sidecar.Name)
 				}
@@ -861,6 +955,11 @@ var _ = SIGDescribe("SidecarSet", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			for _, pod := range pods {
 				origin := sets.String{}
+				for _, sidecar := range sidecarSetIn.Spec.InitContainers {
+					if sidecarcontrol.IsSidecarContainer(sidecar.Container) {
+						origin.Insert(sidecar.Name)
+					}
+				}
 				for _, sidecar := range sidecarSetIn.Spec.Containers {
 					origin.Insert(sidecar.Name)
 				}
@@ -1239,6 +1338,8 @@ var _ = SIGDescribe("SidecarSet", func() {
 			sidecarSetIn.Spec.Containers = sidecarSetIn.Spec.Containers[:1]
 			ginkgo.By(fmt.Sprintf("Creating SidecarSet %s", sidecarSetIn.Name))
 			sidecarSetIn, _ = tester.CreateSidecarSet(sidecarSetIn)
+			gomega.Expect(sidecarSetIn.Spec.InitContainers[0].PodInjectPolicy).To(gomega.Equal(appsv1alpha1.AfterAppContainerType))
+			gomega.Expect(sidecarSetIn.Spec.Containers[0].PodInjectPolicy).To(gomega.Equal(appsv1alpha1.BeforeAppContainerType))
 			time.Sleep(time.Second)
 
 			// create deployment
@@ -1484,6 +1585,116 @@ var _ = SIGDescribe("SidecarSet", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(hash[sidecarSetIn.Name].SidecarSetControllerRevision).To(gomega.Equal(list[5].Name))
 			ginkgo.By("sidecarSet InjectionStrategy.Revision check done")
+		})
+
+		framework.ConformanceIt("sidecarSet inject pod sidecar during canary upgrades", func() {
+			// create sidecarSet
+			nginxName := func(tag string) string {
+				return fmt.Sprintf("nginx:%s", tag)
+			}
+			stableTag, canaryTag := "1.20.1", "1.21.1"
+			sidecarSetIn := tester.NewBaseSidecarSet(ns)
+			sidecarSetIn.Labels = map[string]string{
+				appsv1alpha1.SidecarSetCustomVersionLabel: "0",
+			}
+			sidecarSetIn.SetName("e2e-test-for-canary-upgrade")
+			sidecarSetIn.Spec.Containers[0].Image = nginxName(stableTag)
+			sidecarSetIn.Spec.UpdateStrategy.Type = appsv1alpha1.RollingUpdateSidecarSetStrategyType
+			ginkgo.By(fmt.Sprintf("Creating SidecarSet %s", sidecarSetIn.Name))
+			sidecarSetIn, _ = tester.CreateSidecarSet(sidecarSetIn)
+			time.Sleep(time.Second)
+
+			// create deployment
+			deploymentStable, deploymentCanary := tester.NewBaseDeployment(ns), tester.NewBaseDeployment(ns)
+			deploymentStable.Name += "-stable"
+			deploymentStable.Spec.Replicas = ptr.To(int32(1))
+			deploymentStable.Spec.Template.Labels["version"] = "stable"
+			deploymentStable.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
+			deploymentStable.Spec.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
+			ginkgo.By(fmt.Sprintf("Creating Deployment(%s.%s)", deploymentStable.Namespace, deploymentStable.Name))
+			deploymentCanary.Name += "-canary"
+			deploymentCanary.Spec.Replicas = ptr.To(int32(1))
+			deploymentCanary.Spec.Template.Labels["version"] = "canary"
+			deploymentCanary.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
+			deploymentCanary.Spec.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
+			ginkgo.By(fmt.Sprintf("Creating Deployment(%s.%s)", deploymentCanary.Namespace, deploymentCanary.Name))
+			tester.CreateDeployment(deploymentStable)
+			tester.CreateDeployment(deploymentCanary)
+			tester.WaitForDeploymentRunning(deploymentStable)
+			tester.WaitForDeploymentRunning(deploymentCanary)
+
+			calculateSidecarImages := func(pods []*corev1.Pod) (stableNum, canaryNum int) {
+				for _, pod := range pods {
+					for _, container := range pod.Spec.Containers {
+						if container.Image == nginxName(stableTag) {
+							stableNum++
+						}
+						if container.Image == nginxName(canaryTag) {
+							canaryNum++
+						}
+					}
+				}
+				return
+			}
+			var stableNum, canaryNum int
+
+			// check sidecar original revisions
+			podStable, err := tester.GetSelectorPods(ns, &metav1.LabelSelector{MatchLabels: deploymentStable.Spec.Template.Labels})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(podStable).To(gomega.HaveLen(1))
+			stableNum, canaryNum = calculateSidecarImages(podStable)
+			gomega.Expect(stableNum).To(gomega.Equal(1))
+			gomega.Expect(canaryNum).To(gomega.Equal(0))
+			podCanary, err := tester.GetSelectorPods(ns, &metav1.LabelSelector{MatchLabels: deploymentCanary.Spec.Template.Labels})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(podCanary).To(gomega.HaveLen(1))
+			stableNum, canaryNum = calculateSidecarImages(podCanary)
+			gomega.Expect(stableNum).To(gomega.Equal(1))
+			gomega.Expect(canaryNum).To(gomega.Equal(0))
+			ginkgo.By(fmt.Sprintf("All pods are injected with a stable sidecar"))
+
+			// canary update sidecarSet
+			sidecarSetIn.Spec.Containers[0].Image = nginxName(canaryTag)
+			sidecarSetIn.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "SOME_ENV", Value: "SOME_VAL"}} // make in-place upgrade impossible
+			sidecarSetIn.Spec.UpdateStrategy.Selector = &metav1.LabelSelector{
+				MatchLabels: map[string]string{"version": "canary"},
+			}
+			sidecarSetIn.Spec.InjectionStrategy.Revision = &appsv1alpha1.SidecarSetInjectRevision{CustomVersion: ptr.To("0")}
+			sidecarSetIn.Labels = map[string]string{
+				appsv1alpha1.SidecarSetCustomVersionLabel: "1",
+			}
+			tester.UpdateSidecarSet(sidecarSetIn)
+			expect := &appsv1alpha1.SidecarSetStatus{
+				MatchedPods:      2,
+				UpdatedPods:      0,
+				UpdatedReadyPods: 0,
+				ReadyPods:        2,
+			}
+			tester.WaitForSidecarSetUpgradeComplete(sidecarSetIn, expect)
+			ginkgo.By(fmt.Sprintf("Sidecarset Updated"))
+
+			// scale up deployments
+			deploymentStable.Spec.Replicas = ptr.To(int32(2))
+			deploymentCanary.Spec.Replicas = ptr.To(int32(2))
+			tester.UpdateDeployment(deploymentStable)
+			tester.UpdateDeployment(deploymentCanary)
+			tester.WaitForDeploymentRunning(deploymentStable)
+			tester.WaitForDeploymentRunning(deploymentCanary)
+
+			// check sidecar versions
+			podStable, err = tester.GetSelectorPods(ns, &metav1.LabelSelector{MatchLabels: deploymentStable.Spec.Template.Labels})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(podStable).To(gomega.HaveLen(2))
+			stableNum, canaryNum = calculateSidecarImages(podStable)
+			gomega.Expect(stableNum).To(gomega.Equal(2))
+			gomega.Expect(canaryNum).To(gomega.Equal(0))
+			podCanary, err = tester.GetSelectorPods(ns, &metav1.LabelSelector{MatchLabels: deploymentCanary.Spec.Template.Labels})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(podCanary).To(gomega.HaveLen(2))
+			stableNum, canaryNum = calculateSidecarImages(podCanary)
+			gomega.Expect(stableNum).To(gomega.Equal(1))
+			gomega.Expect(canaryNum).To(gomega.Equal(1))
+			ginkgo.By(fmt.Sprintf("All pods are injected with a suitable sidecar"))
 		})
 	})
 })

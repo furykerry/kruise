@@ -23,12 +23,15 @@ import (
 	"strings"
 
 	"github.com/appscode/jsonpatch"
+
 	appspub "github.com/openkruise/kruise/apis/apps/pub"
 	"github.com/openkruise/kruise/pkg/features"
 	"github.com/openkruise/kruise/pkg/util"
 	utilcontainerlaunchpriority "github.com/openkruise/kruise/pkg/util/containerlaunchpriority"
 	utilcontainermeta "github.com/openkruise/kruise/pkg/util/containermeta"
 	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
+	"github.com/openkruise/kruise/pkg/util/volumeclaimtemplate"
+
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -65,7 +68,7 @@ func SetOptionsDefaults(opts *UpdateOptions) *UpdateOptions {
 // defaultPatchUpdateSpecToPod returns new pod that merges spec into old pod
 func defaultPatchUpdateSpecToPod(pod *v1.Pod, spec *UpdateSpec, state *appspub.InPlaceUpdateState) (*v1.Pod, error) {
 
-	klog.V(5).Infof("Begin to in-place update pod %s/%s with update spec %v, state %v", pod.Namespace, pod.Name, util.DumpJSON(spec), util.DumpJSON(state))
+	klog.V(5).InfoS("Begin to in-place update pod", "namespace", pod.Namespace, "name", pod.Name, "spec", util.DumpJSON(spec), "state", util.DumpJSON(state))
 
 	state.NextContainerImages = make(map[string]string)
 	state.NextContainerRefMetadata = make(map[string]metav1.ObjectMeta)
@@ -169,7 +172,7 @@ func defaultPatchUpdateSpecToPod(pod *v1.Pod, spec *UpdateSpec, state *appspub.I
 		Containers: containersToUpdate.List(),
 	})
 
-	klog.V(5).Infof("Decide to in-place update pod %s/%s with state %v", pod.Namespace, pod.Name, util.DumpJSON(state))
+	klog.V(5).InfoS("Decide to in-place update pod", "namespace", pod.Namespace, "name", pod.Name, "state", util.DumpJSON(state))
 
 	inPlaceUpdateStateJSON, _ := json.Marshal(state)
 	pod.Annotations[appspub.InPlaceUpdateStateKey] = string(inPlaceUpdateStateJSON)
@@ -200,8 +203,8 @@ func addMetadataSharedContainersToUpdate(pod *v1.Pod, containersToUpdate sets.St
 			}
 			for _, key := range labelsToUpdate.UnsortedList() {
 				if _, exists := objMeta.Labels[key]; exists {
-					klog.Warningf("Has to in-place update container %s with lower priority in Pod %s/%s, for the label %s it shared has changed",
-						cName, pod.Namespace, pod.Name, key)
+					klog.InfoS("Has to in-place update container with lower priority in Pod, for the label it shared has changed",
+						"containerName", cName, "namespace", pod.Namespace, "name", pod.Name, "label", key)
 					containersToUpdate.Insert(cName)
 					newToUpdate.Insert(cName)
 					break
@@ -209,8 +212,8 @@ func addMetadataSharedContainersToUpdate(pod *v1.Pod, containersToUpdate sets.St
 			}
 			for _, key := range annotationsToUpdate.UnsortedList() {
 				if _, exists := objMeta.Annotations[key]; exists {
-					klog.Warningf("Has to in-place update container %s with lower priority in Pod %s/%s, for the annotation %s it shared has changed",
-						cName, pod.Namespace, pod.Name, key)
+					klog.InfoS("Has to in-place update container with lower priority in Pod, for the annotation it shared has changed",
+						"containerName", cName, "namespace", pod.Namespace, "podName", pod.Name, "annotation", key)
 					containersToUpdate.Insert(cName)
 					newToUpdate.Insert(cName)
 					break
@@ -232,6 +235,16 @@ func defaultCalculateInPlaceUpdateSpec(oldRevision, newRevision *apps.Controller
 	patches, err := jsonpatch.CreatePatch(oldRevision.Data.Raw, newRevision.Data.Raw)
 	if err != nil {
 		return nil
+	}
+
+	// RecreatePodWhenChangeVCTInCloneSetGate enabled
+	if utilfeature.DefaultFeatureGate.Enabled(features.RecreatePodWhenChangeVCTInCloneSetGate) {
+		if !opts.IgnoreVolumeClaimTemplatesHashDiff {
+			canInPlace := volumeclaimtemplate.CanVCTemplateInplaceUpdate(oldRevision, newRevision)
+			if !canInPlace {
+				return nil
+			}
+		}
 	}
 
 	oldTemp, err := GetTemplateFromRevision(oldRevision)
@@ -372,7 +385,7 @@ func defaultCheckContainersInPlaceUpdateCompleted(pod *v1.Pod, inPlaceUpdateStat
 
 	if runtimeContainerMetaSet != nil {
 		if checkAllContainersHashConsistent(pod, runtimeContainerMetaSet, plainHash) {
-			klog.V(5).Infof("Check Pod %s/%s in-place update completed for all container hash consistent", pod.Namespace, pod.Name)
+			klog.V(5).InfoS("Check Pod in-place update completed for all container hash consistent", "namespace", pod.Namespace, "name", pod.Name)
 			return nil
 		}
 		// If it needs not to update envs from metadata, we don't have to return error here,
@@ -430,7 +443,7 @@ func checkAllContainersHashConsistent(pod *v1.Pod, runtimeContainerMetaSet *apps
 			}
 		}
 		if containerStatus == nil {
-			klog.Warningf("Find no container %s in status for Pod %s/%s", containerSpec.Name, pod.Namespace, pod.Name)
+			klog.InfoS("Find no container in status for Pod", "containerName", containerSpec.Name, "namespace", pod.Namespace, "podName", pod.Name)
 			return false
 		}
 
@@ -442,28 +455,31 @@ func checkAllContainersHashConsistent(pod *v1.Pod, runtimeContainerMetaSet *apps
 			}
 		}
 		if containerMeta == nil {
-			klog.Warningf("Find no container %s in runtime-container-meta for Pod %s/%s", containerSpec.Name, pod.Namespace, pod.Name)
+			klog.InfoS("Find no container in runtime-container-meta for Pod", "containerName", containerSpec.Name, "namespace", pod.Namespace, "podName", pod.Name)
 			return false
 		}
 
 		if containerMeta.ContainerID != containerStatus.ContainerID {
-			klog.Warningf("Find container %s in runtime-container-meta for Pod %s/%s has different containerID with status %s != %s",
-				containerSpec.Name, pod.Namespace, pod.Name, containerMeta.ContainerID, containerStatus.ContainerID)
+			klog.InfoS("Find container in runtime-container-meta for Pod has different containerID with status",
+				"containerName", containerSpec.Name, "namespace", pod.Namespace, "podName", pod.Name,
+				"metaID", containerMeta.ContainerID, "statusID", containerStatus.ContainerID)
 			return false
 		}
 
 		switch hashType {
 		case plainHash:
 			if expectedHash := kubeletcontainer.HashContainer(containerSpec); containerMeta.Hashes.PlainHash != expectedHash {
-				klog.Warningf("Find container %s in runtime-container-meta for Pod %s/%s has different plain hash with spec %v != %v",
-					containerSpec.Name, pod.Namespace, pod.Name, containerMeta.Hashes.PlainHash, expectedHash)
+				klog.InfoS("Find container in runtime-container-meta for Pod has different plain hash with spec",
+					"containerName", containerSpec.Name, "namespace", pod.Namespace, "podName", pod.Name,
+					"metaHash", containerMeta.Hashes.PlainHash, "expectedHash", expectedHash)
 				return false
 			}
 		case extractedEnvFromMetadataHash:
 			hasher := utilcontainermeta.NewEnvFromMetadataHasher()
 			if expectedHash := hasher.GetExpectHash(containerSpec, pod); containerMeta.Hashes.ExtractedEnvFromMetadataHash != expectedHash {
-				klog.Warningf("Find container %s in runtime-container-meta for Pod %s/%s has different extractedEnvFromMetadataHash with spec %v != %v",
-					containerSpec.Name, pod.Namespace, pod.Name, containerMeta.Hashes.ExtractedEnvFromMetadataHash, expectedHash)
+				klog.InfoS("Find container in runtime-container-meta for Pod has different extractedEnvFromMetadataHash with spec",
+					"containerName", containerSpec.Name, "namespace", pod.Namespace, "podName", pod.Name,
+					"metaHash", containerMeta.Hashes.ExtractedEnvFromMetadataHash, "expectedHash", expectedHash)
 				return false
 			}
 		}

@@ -247,6 +247,67 @@ func TestPubReconcile(t *testing.T) {
 			},
 		},
 		{
+			name: "select matched pub.annotations[pub.kruise.io/protect-total-replicas]=15 and selector, selector and maxUnavailable 30%",
+			getPods: func(rs ...*apps.ReplicaSet) []*corev1.Pod {
+				var matchedPods []*corev1.Pod
+				for i := 0; int32(i) < 5; i++ {
+					pod := podDemo.DeepCopy()
+					pod.OwnerReferences = []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "ReplicaSet",
+							Name:       rs[0].Name,
+							UID:        rs[0].UID,
+							Controller: utilpointer.BoolPtr(true),
+						},
+					}
+					pod.Name = fmt.Sprintf("%s-%d", pod.Name, i)
+					matchedPods = append(matchedPods, pod)
+				}
+				for i := 5; int32(i) < 10; i++ {
+					pod := podDemo.DeepCopy()
+					pod.OwnerReferences = []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "ReplicaSet",
+							Name:       rs[1].Name,
+							UID:        rs[1].UID,
+							Controller: utilpointer.BoolPtr(true),
+						},
+					}
+					pod.Name = fmt.Sprintf("%s-%d", pod.Name, i)
+					matchedPods = append(matchedPods, pod)
+				}
+				return matchedPods
+			},
+			getDeployment: func() *apps.Deployment {
+				obj := deploymentDemo.DeepCopy()
+				obj.Spec.Replicas = utilpointer.Int32(0)
+				return obj
+			},
+			getReplicaSet: func() []*apps.ReplicaSet {
+				obj1 := replicaSetDemo.DeepCopy()
+				obj1.Name = "nginx-rs-1"
+				obj2 := replicaSetDemo.DeepCopy()
+				obj2.Name = "nginx-rs-2"
+				obj2.UID = "a34b0453-3426-4685-a79c-752e7062a523"
+				return []*apps.ReplicaSet{obj1, obj2}
+			},
+			getPub: func() *policyv1alpha1.PodUnavailableBudget {
+				pub := pubDemo.DeepCopy()
+				pub.Annotations[policyv1alpha1.PubProtectTotalReplicasAnnotation] = "15"
+				return pub
+			},
+			expectPubStatus: func() policyv1alpha1.PodUnavailableBudgetStatus {
+				return policyv1alpha1.PodUnavailableBudgetStatus{
+					UnavailableAllowed: 0,
+					CurrentAvailable:   10,
+					DesiredAvailable:   10,
+					TotalReplicas:      15,
+				}
+			},
+		},
+		{
 			name: "select matched deployment(replicas=10,maxSurge=30%,maxUnavailable=0), and pub(selector,maxUnavailable=30%)",
 			getPods: func(rs ...*apps.ReplicaSet) []*corev1.Pod {
 				var matchedPods []*corev1.Pod
@@ -331,6 +392,7 @@ func TestPubReconcile(t *testing.T) {
 					t := metav1.Now()
 					if i >= 7 && i < 10 {
 						pod.DeletionTimestamp = &t
+						pod.Finalizers = []string{"finalizers.sigs.k8s.io/test"}
 					}
 					matchedPods = append(matchedPods, pod)
 				}
@@ -397,6 +459,7 @@ func TestPubReconcile(t *testing.T) {
 				obj := deploymentDemo.DeepCopy()
 				t := metav1.Now()
 				obj.DeletionTimestamp = &t
+				obj.Finalizers = []string{"finalizers.sigs.k8s.io/test"}
 				return obj
 			},
 			getReplicaSet: func() []*apps.ReplicaSet {
@@ -461,6 +524,56 @@ func TestPubReconcile(t *testing.T) {
 					CurrentAvailable:   0,
 					DesiredAvailable:   0,
 					TotalReplicas:      0,
+				}
+			},
+		},
+		{
+			name: "select matched deployment(replicas=1,maxSurge=0,maxUnavailable=30%), pub.kruise.io/protect-total-replicas=15 and pub(targetRef,maxUnavailable=30%)",
+			getPods: func(rs ...*apps.ReplicaSet) []*corev1.Pod {
+				var matchedPods []*corev1.Pod
+				for i := 0; int32(i) < 10; i++ {
+					pod := podDemo.DeepCopy()
+					pod.OwnerReferences = []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "ReplicaSet",
+							Name:       rs[0].Name,
+							UID:        rs[0].UID,
+							Controller: utilpointer.BoolPtr(true),
+						},
+					}
+					pod.Name = fmt.Sprintf("%s-%d", pod.Name, i)
+					matchedPods = append(matchedPods, pod)
+				}
+				return matchedPods
+			},
+			getDeployment: func() *apps.Deployment {
+				obj := deploymentDemo.DeepCopy()
+				obj.Spec.Replicas = utilpointer.Int32(1)
+				return obj
+			},
+			getReplicaSet: func() []*apps.ReplicaSet {
+				obj1 := replicaSetDemo.DeepCopy()
+				obj1.Name = "nginx-rs-1"
+				return []*apps.ReplicaSet{obj1}
+			},
+			getPub: func() *policyv1alpha1.PodUnavailableBudget {
+				pub := pubDemo.DeepCopy()
+				pub.Spec.Selector = nil
+				pub.Spec.TargetReference = &policyv1alpha1.TargetReference{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       "nginx",
+				}
+				pub.Annotations[policyv1alpha1.PubProtectTotalReplicasAnnotation] = "15"
+				return pub
+			},
+			expectPubStatus: func() policyv1alpha1.PodUnavailableBudgetStatus {
+				return policyv1alpha1.PodUnavailableBudgetStatus{
+					UnavailableAllowed: 0,
+					CurrentAvailable:   10,
+					DesiredAvailable:   10,
+					TotalReplicas:      15,
 				}
 			},
 		},
@@ -531,6 +644,7 @@ func TestPubReconcile(t *testing.T) {
 					if i >= 7 {
 						t := metav1.Now()
 						pod.DeletionTimestamp = &t
+						pod.Finalizers = []string{"finalizers.sigs.k8s.io/test"}
 					}
 					pod.Name = fmt.Sprintf("%s-%d", pod.Name, i)
 					matchedPods = append(matchedPods, pod)
@@ -590,6 +704,7 @@ func TestPubReconcile(t *testing.T) {
 				obj := deploymentDemo.DeepCopy()
 				t := metav1.Now()
 				obj.DeletionTimestamp = &t
+				obj.Finalizers = []string{"finalizers.sigs.k8s.io/test"}
 				return obj
 			},
 			getReplicaSet: func() []*apps.ReplicaSet {
@@ -928,6 +1043,7 @@ func TestPubReconcile(t *testing.T) {
 					pod.Name = fmt.Sprintf("%s-%d", pod.Name, i)
 					if i >= 20 && i < 25 {
 						pod.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+						pod.Finalizers = []string{"finalizers.sigs.k8s.io/test"}
 					}
 					matchedPods = append(matchedPods, pod)
 				}
@@ -977,6 +1093,7 @@ func TestPubReconcile(t *testing.T) {
 					pod.Name = fmt.Sprintf("%s-%d", pod.Name, i)
 					if i >= 10 && i < 15 {
 						pod.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+						pod.Finalizers = []string{"finalizers.sigs.k8s.io/test"}
 					}
 					matchedPods = append(matchedPods, pod)
 				}
@@ -1030,6 +1147,7 @@ func TestPubReconcile(t *testing.T) {
 					pod.Name = fmt.Sprintf("%s-%d", pod.Name, i)
 					if i >= 20 && i < 25 {
 						pod.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+						pod.Finalizers = []string{"finalizers.sigs.k8s.io/test"}
 					}
 					matchedPods = append(matchedPods, pod)
 				}
@@ -1088,6 +1206,7 @@ func TestPubReconcile(t *testing.T) {
 					pod.Name = fmt.Sprintf("%s-%d", pod.Name, i)
 					if i >= 20 && i < 25 {
 						pod.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+						pod.Finalizers = []string{"finalizers.sigs.k8s.io/test"}
 					}
 					matchedPods = append(matchedPods, pod)
 				}
@@ -1106,7 +1225,7 @@ func TestPubReconcile(t *testing.T) {
 			getPub: func() *policyv1alpha1.PodUnavailableBudget {
 				pub := pubDemo.DeepCopy()
 
-				pub.Annotations[policyv1alpha1.PubProtectTotalReplicas] = "50"
+				pub.Annotations[policyv1alpha1.PubProtectTotalReplicasAnnotation] = "50"
 				for i := 0; i < 10; i++ {
 					if i >= 0 && i < 5 {
 						pub.Status.UnavailablePods[fmt.Sprintf("test-pod-%d", i)] = metav1.Time{Time: time.Now().Add(-10 * time.Second)}
@@ -1144,21 +1263,25 @@ func TestPubReconcile(t *testing.T) {
 		t.Run(cs.name, func(t *testing.T) {
 			pub := cs.getPub()
 			defer util.GlobalCache.Delete(pub)
-			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cs.getDeployment(), pub).
-				WithIndex(&corev1.Pod{}, fieldindex.IndexNameForOwnerRefUID, func(obj client.Object) []string {
-					var owners []string
-					for _, ref := range obj.GetOwnerReferences() {
-						owners = append(owners, string(ref.UID))
-					}
-					return owners
-				}).Build()
+
+			builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cs.getDeployment(), pub)
+			builder.WithIndex(&corev1.Pod{}, fieldindex.IndexNameForOwnerRefUID, func(obj client.Object) []string {
+				var owners []string
+				for _, ref := range obj.GetOwnerReferences() {
+					owners = append(owners, string(ref.UID))
+				}
+				return owners
+			})
+			builder.WithStatusSubresource(&policyv1alpha1.PodUnavailableBudget{})
 			for _, pod := range cs.getPods(cs.getReplicaSet()...) {
 				podIn := pod.DeepCopy()
-				_ = fakeClient.Create(context.TODO(), podIn)
+				builder.WithObjects(podIn)
 			}
 			for _, obj := range cs.getReplicaSet() {
-				_ = fakeClient.Create(context.TODO(), obj)
+				builder.WithObjects(obj)
 			}
+			fakeClient := builder.Build()
+
 			finder := &controllerfinder.ControllerFinder{Client: fakeClient}
 			pubcontrol.InitPubControl(fakeClient, finder, record.NewFakeRecorder(10))
 			controllerfinder.Finder = &controllerfinder.ControllerFinder{Client: fakeClient}

@@ -22,12 +22,13 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/openkruise/kruise/apis/apps/defaults"
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	"github.com/openkruise/kruise/pkg/util"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/openkruise/kruise/apis/apps/defaults"
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	"github.com/openkruise/kruise/pkg/util"
 )
 
 // DaemonSetCreateUpdateHandler handles DaemonSet
@@ -63,7 +64,7 @@ func (h *DaemonSetCreateUpdateHandler) Handle(ctx context.Context, req admission
 	}
 	resp := admission.PatchResponseFromRaw(req.AdmissionRequest.Object.Raw, marshalled)
 	if len(resp.Patches) > 0 {
-		klog.V(5).Infof("Admit DaemonSet %s/%s patches: %v", obj.Namespace, obj.Name, util.DumpJSON(resp.Patches))
+		klog.V(5).InfoS("Admit DaemonSet patches", "namespace", obj.Namespace, "name", obj.Name, "patches", util.DumpJSON(resp.Patches))
 	}
 
 	return resp
@@ -76,11 +77,3 @@ func (h *DaemonSetCreateUpdateHandler) Handle(ctx context.Context, req admission
 //	h.Client = c
 //	return nil
 //}
-
-var _ admission.DecoderInjector = &DaemonSetCreateUpdateHandler{}
-
-// InjectDecoder injects the decoder into the DaemonSetCreateUpdateHandler
-func (h *DaemonSetCreateUpdateHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
-}

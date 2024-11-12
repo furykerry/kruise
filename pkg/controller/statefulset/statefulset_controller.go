@@ -25,6 +25,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -33,6 +34,7 @@ import (
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	appslisters "k8s.io/client-go/listers/apps/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	storagelisters "k8s.io/client-go/listers/storage/v1"
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -122,6 +124,10 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	if err != nil {
 		return nil, err
 	}
+	scInformer, err := cacher.GetInformerForKind(context.TODO(), storagev1.SchemeGroupVersion.WithKind("StorageClass"))
+	if err != nil {
+		return nil, err
+	}
 	revInformer, err := cacher.GetInformerForKind(context.TODO(), appsv1.SchemeGroupVersion.WithKind("ControllerRevision"))
 	if err != nil {
 		return nil, err
@@ -130,6 +136,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	statefulSetLister := kruiseappslisters.NewStatefulSetLister(statefulSetInformer.(toolscache.SharedIndexInformer).GetIndexer())
 	podLister := corelisters.NewPodLister(podInformer.(toolscache.SharedIndexInformer).GetIndexer())
 	pvcLister := corelisters.NewPersistentVolumeClaimLister(pvcInformer.(toolscache.SharedIndexInformer).GetIndexer())
+	scLister := storagelisters.NewStorageClassLister(scInformer.(toolscache.SharedIndexInformer).GetIndexer())
 
 	genericClient := client.GetGenericClientWithName("statefulset-controller")
 	eventBroadcaster := record.NewBroadcaster()
@@ -147,6 +154,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 				genericClient.KubeClient,
 				podLister,
 				pvcLister,
+				scLister,
 				recorder),
 			inplaceupdate.New(utilclient.NewClientFromManager(mgr, "statefulset-controller"), revisionadapter.NewDefaultImpl()),
 			lifecycle.New(utilclient.NewClientFromManager(mgr, "statefulset-controller")),
@@ -188,12 +196,13 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	}
 
 	// Watch for changes to StatefulSet
-	err = c.Watch(&source.Kind{Type: &appsv1beta1.StatefulSet{}}, &handler.EnqueueRequestForObject{}, predicate.Funcs{
+	err = c.Watch(source.Kind(mgr.GetCache(), &appsv1beta1.StatefulSet{}), &handler.EnqueueRequestForObject{}, predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldSS := e.ObjectOld.(*appsv1beta1.StatefulSet)
 			newSS := e.ObjectNew.(*appsv1beta1.StatefulSet)
 			if oldSS.Status.Replicas != newSS.Status.Replicas {
-				klog.V(4).Infof("Observed updated replica count for StatefulSet: %v, %d->%d", newSS.Name, oldSS.Status.Replicas, newSS.Status.Replicas)
+				klog.V(4).InfoS("Observed updated replica count for StatefulSet",
+					"statefulSet", klog.KObj(newSS), "oldReplicas", oldSS.Status.Replicas, "newReplicas", newSS.Status.Replicas)
 			}
 			return true
 		},
@@ -202,16 +211,20 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	// Watch for changes to Pod created by StatefulSet
-	err = c.Watch(&source.Kind{Type: &v1.Pod{}}, &handler.EnqueueRequestForOwner{
-		IsController: true,
-		OwnerType:    &appsv1beta1.StatefulSet{},
-	})
+	// Watch for changes to PVC patched by StatefulSet
+	err = c.Watch(source.Kind(mgr.GetCache(), &v1.PersistentVolumeClaim{}), &pvcEventHandler{})
 	if err != nil {
 		return err
 	}
 
-	klog.V(4).Infof("finished to add statefulset-controller")
+	// Watch for changes to Pod created by StatefulSet
+	err = c.Watch(source.Kind(mgr.GetCache(), &v1.Pod{}), handler.EnqueueRequestForOwner(
+		mgr.GetScheme(), mgr.GetRESTMapper(), &appsv1beta1.StatefulSet{}, handler.OnlyControllerOwner()))
+	if err != nil {
+		return err
+	}
+
+	klog.V(4).InfoS("Finished to add statefulset-controller")
 
 	return nil
 }
@@ -220,6 +233,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps.kruise.io,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps.kruise.io,resources=statefulsets/status,verbs=get;update;patch
@@ -237,18 +251,18 @@ func (ssc *ReconcileStatefulSet) Reconcile(ctx context.Context, request reconcil
 	defer func() {
 		if retErr == nil {
 			if res.Requeue || res.RequeueAfter > 0 {
-				klog.Infof("Finished syncing statefulset %q (%v), result: %v", key, time.Since(startTime), res)
+				klog.InfoS("Finished syncing StatefulSet", "statefulSet", request, "elapsedTime", time.Since(startTime), "result", res)
 			} else {
-				klog.Infof("Finished syncing statefulset %q (%v)", key, time.Since(startTime))
+				klog.InfoS("Finished syncing StatefulSet", "statefulSet", request, "elapsedTime", time.Since(startTime))
 			}
 		} else {
-			klog.Infof("Finished syncing statefulset %q (%v), error: %v", key, time.Since(startTime), retErr)
+			klog.ErrorS(retErr, "Finished syncing StatefulSet error", "statefulSet", request, "elapsedTime", time.Since(startTime))
 		}
 	}()
 
 	set, err := ssc.setLister.StatefulSets(namespace).Get(name)
 	if errors.IsNotFound(err) {
-		klog.Infof("StatefulSet has been deleted %v", key)
+		klog.InfoS("StatefulSet deleted", "statefulSet", key)
 		updateExpectations.DeleteExpectations(key)
 		return reconcile.Result{}, nil
 	}
@@ -340,11 +354,11 @@ func (ssc *ReconcileStatefulSet) getPodsForStatefulSet(ctx context.Context, set 
 
 // syncStatefulSet syncs a tuple of (statefulset, []*v1.Pod).
 func (ssc *ReconcileStatefulSet) syncStatefulSet(ctx context.Context, set *appsv1beta1.StatefulSet, pods []*v1.Pod) error {
-	klog.V(4).Infof("Syncing StatefulSet %v/%v with %d pods", set.Namespace, set.Name, len(pods))
+	klog.V(4).InfoS("Syncing StatefulSet with pods", "statefulSet", klog.KObj(set), "podCount", len(pods))
 	// TODO: investigate where we mutate the set during the update as it is not obvious.
 	if err := ssc.control.UpdateStatefulSet(ctx, set.DeepCopy(), pods); err != nil {
 		return err
 	}
-	klog.V(4).Infof("Successfully synced StatefulSet %s/%s", set.Namespace, set.Name)
+	klog.V(4).InfoS("Successfully synced StatefulSet", "statefulSet", klog.KObj(set))
 	return nil
 }

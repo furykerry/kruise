@@ -22,12 +22,13 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/openkruise/kruise/apis/apps/defaults"
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	"github.com/openkruise/kruise/pkg/util"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/openkruise/kruise/apis/apps/defaults"
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	"github.com/openkruise/kruise/pkg/util"
 )
 
 // ImageListPullJobCreateUpdateHandler handles ImagePullJob
@@ -56,16 +57,8 @@ func (h *ImageListPullJobCreateUpdateHandler) Handle(ctx context.Context, req ad
 	}
 	resp := admission.PatchResponseFromRaw(req.AdmissionRequest.Object.Raw, marshalled)
 	if len(resp.Patches) > 0 {
-		klog.V(5).Infof("Admit ImageListPullJob %s patches: %v", obj.Name, util.DumpJSON(resp.Patches))
+		klog.V(5).InfoS("Admit ImageListPullJob patches", "name", obj.Name, "patches", util.DumpJSON(resp.Patches))
 	}
 
 	return resp
-}
-
-var _ admission.DecoderInjector = &ImageListPullJobCreateUpdateHandler{}
-
-// InjectDecoder injects the decoder into the ImageListPullJobCreateUpdateHandler
-func (h *ImageListPullJobCreateUpdateHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
 }

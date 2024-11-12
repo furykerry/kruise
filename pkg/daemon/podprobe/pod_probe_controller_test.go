@@ -410,7 +410,7 @@ func TestUpdateNodePodProbeStatus(t *testing.T) {
 func checkNodePodProbeStatusEqual(lister listersalpha1.NodePodProbeLister, expect appsv1alpha1.NodePodProbeStatus) bool {
 	npp, err := lister.Get("node-1")
 	if err != nil {
-		klog.Errorf("Get NodePodProbe failed: %s", err.Error())
+		klog.ErrorS(err, "Get NodePodProbe failed")
 		return false
 	}
 	for i := range npp.Status.PodProbeStatuses {
@@ -600,9 +600,13 @@ func TestSyncNodePodProbe(t *testing.T) {
 				return
 			}
 			time.Sleep(time.Second)
+
+			c.workerLock.RLock()
 			if len(c.workers) != len(cs.expectWorkers(c)) {
 				t.Fatalf("expect(%d), but get(%d)", len(cs.expectWorkers(c)), len(c.workers))
 			}
+			c.workerLock.RUnlock()
+
 			for _, worker := range cs.expectWorkers(c) {
 				obj, ok := c.workers[worker.key]
 				if !ok {

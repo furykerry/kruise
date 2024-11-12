@@ -12,9 +12,9 @@ GOBIN=$(shell go env GOBIN)
 endif
 GOOS ?= $(shell go env GOOS)
 
-# ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary. 
+# ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 # Run `setup-envtest list` to list available versions.
-ENVTEST_K8S_VERSION ?= 1.26.0
+ENVTEST_K8S_VERSION ?= 1.28.0
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # This is a requirement for 'setup-envtest.sh' in the test target.
@@ -27,7 +27,7 @@ all: build
 ##@ Development
 
 go_check:
-	@scripts/check_go_version "1.19.0"
+	@scripts/check_go_version "1.20"
 
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	@scripts/generate_client.sh
@@ -48,7 +48,9 @@ lint: golangci-lint ## Run golangci-lint against code.
 
 test: generate fmt vet manifests envtest ## Run tests
 	echo $(ENVTEST)
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test ./pkg/... -coverprofile cover.out
+	go build -o pkg/daemon/criruntime/imageruntime/fake_plugin/fake-credential-plugin pkg/daemon/criruntime/imageruntime/fake_plugin/main.go && chmod +x pkg/daemon/criruntime/imageruntime/fake_plugin/fake-credential-plugin
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test -race ./pkg/... -coverprofile cover.out
+	rm pkg/daemon/criruntime/imageruntime/fake_plugin/fake-credential-plugin
 
 coverage-report: ## Generate cover.html from cover.out
 	go tool cover -html=cover.out -o cover.html
@@ -87,7 +89,6 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default | kubectl apply -f -
-	echo -e "resources:\n- manager.yaml" > config/manager/kustomization.yaml
 	$(KUSTOMIZE) build config/daemonconfig | kubectl apply -f -
 
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
@@ -97,7 +98,7 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 CONTROLLER_GEN = $(shell pwd)/bin/controller-gen
 controller-gen: ## Download controller-gen locally if necessary.
 
-# controller-gen@v0.14.0 comply with k8s.io/api v0.26.x
+# controller-gen@v0.14.0 comply with k8s.io/api v0.28.x
 ifeq ("$(shell $(CONTROLLER_GEN) --version 2> /dev/null)", "Version: v0.14.0")
 else
 	rm -rf $(CONTROLLER_GEN)
@@ -150,6 +151,10 @@ endif
 create-cluster: $(tools/kind)
 	tools/hack/create-cluster.sh
 
+.PHONY: install-csi
+install-csi:
+	cd tools/hack/csi-driver-host-path; ./install-snapshot.sh
+
 # delete-cluster deletes a kube cluster.
 .PHONY: delete-cluster
 delete-cluster: $(tools/kind) ## Delete kind cluster.
@@ -171,7 +176,9 @@ run-kruise-e2e-test:
 	@echo -e "\n\033[36mRunning kruise e2e tests...\033[0m"
 	tools/hack/run-kruise-e2e-test.sh
 
+generate_helm_crds:
+	scripts/generate_helm_crds.sh
 
 # kruise-e2e-test runs kruise e2e tests.
 .PHONY: kruise-e2e-test
-kruise-e2e-test: $(tools/kind) delete-cluster create-cluster docker-build kube-load-image install-kruise run-kruise-e2e-test delete-cluster
+kruise-e2e-test: $(tools/kind) delete-cluster create-cluster install-csi docker-build kube-load-image install-kruise run-kruise-e2e-test delete-cluster

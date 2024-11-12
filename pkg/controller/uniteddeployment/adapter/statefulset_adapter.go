@@ -58,29 +58,32 @@ func (a *StatefulSetAdapter) GetStatusObservedGeneration(obj metav1.Object) int6
 	return obj.(*appsv1.StatefulSet).Status.ObservedGeneration
 }
 
-// GetReplicaDetails returns the replicas detail the subset needs.
-func (a *StatefulSetAdapter) GetReplicaDetails(obj metav1.Object, updatedRevision string) (specReplicas, specPartition *int32, statusReplicas, statusReadyReplicas, statusUpdatedReplicas, statusUpdatedReadyReplicas int32, err error) {
-	set := obj.(*appsv1.StatefulSet)
-	var pods []*corev1.Pod
-	pods, err = a.getStatefulSetPods(set)
-	if err != nil {
-		return
-	}
+func (a *StatefulSetAdapter) GetSubsetPods(obj metav1.Object) ([]*corev1.Pod, error) {
+	return a.getStatefulSetPods(obj.(*appsv1.StatefulSet))
+}
 
-	specReplicas = set.Spec.Replicas
+func (a *StatefulSetAdapter) GetSpecReplicas(obj metav1.Object) *int32 {
+	return obj.(*appsv1.StatefulSet).Spec.Replicas
+}
+
+func (a *StatefulSetAdapter) GetSpecPartition(obj metav1.Object, pods []*corev1.Pod) *int32 {
+	set := obj.(*appsv1.StatefulSet)
 	if set.Spec.UpdateStrategy.Type == appsv1.OnDeleteStatefulSetStrategyType {
 		revision := getRevision(&set.ObjectMeta)
-		specPartition = getCurrentPartition(pods, revision)
+		return getCurrentPartition(pods, revision)
 	} else if set.Spec.UpdateStrategy.RollingUpdate != nil &&
 		set.Spec.UpdateStrategy.RollingUpdate.Partition != nil {
-		specPartition = set.Spec.UpdateStrategy.RollingUpdate.Partition
+		return set.Spec.UpdateStrategy.RollingUpdate.Partition
 	}
+	return nil
+}
 
-	statusReplicas = set.Status.Replicas
-	statusReadyReplicas = set.Status.ReadyReplicas
-	statusUpdatedReplicas, statusUpdatedReadyReplicas = calculateUpdatedReplicas(pods, updatedRevision)
+func (a *StatefulSetAdapter) GetStatusReplicas(obj metav1.Object) int32 {
+	return obj.(*appsv1.StatefulSet).Status.Replicas
+}
 
-	return
+func (a *StatefulSetAdapter) GetStatusReadyReplicas(obj metav1.Object) int32 {
+	return obj.(*appsv1.StatefulSet).Status.ReadyReplicas
 }
 
 // GetSubsetFailure returns the failure information of the subset.
@@ -135,28 +138,23 @@ func (a *StatefulSetAdapter) ApplySubsetTemplate(ud *alpha1.UnitedDeployment, su
 		return err
 	}
 
+	set.Spec = *ud.Spec.Template.StatefulSetTemplate.Spec.DeepCopy()
 	set.Spec.Selector = selectors
 	set.Spec.Replicas = &replicas
-	if ud.Spec.Template.StatefulSetTemplate.Spec.UpdateStrategy.Type == appsv1.OnDeleteStatefulSetStrategyType {
-		set.Spec.UpdateStrategy.Type = appsv1.OnDeleteStatefulSetStrategyType
-	} else {
+	if ud.Spec.Template.StatefulSetTemplate.Spec.UpdateStrategy.Type == "" || // Default value is RollingUpdate, which is not set in webhook
+		ud.Spec.Template.StatefulSetTemplate.Spec.UpdateStrategy.Type == appsv1.RollingUpdateStatefulSetStrategyType {
+		set.Spec.UpdateStrategy.Type = appsv1.RollingUpdateStatefulSetStrategyType
 		if set.Spec.UpdateStrategy.RollingUpdate == nil {
 			set.Spec.UpdateStrategy.RollingUpdate = &appsv1.RollingUpdateStatefulSetStrategy{}
 		}
 		set.Spec.UpdateStrategy.RollingUpdate.Partition = &partition
 	}
 
-	set.Spec.Template = *ud.Spec.Template.StatefulSetTemplate.Spec.Template.DeepCopy()
 	if set.Spec.Template.Labels == nil {
 		set.Spec.Template.Labels = map[string]string{}
 	}
 	set.Spec.Template.Labels[alpha1.SubSetNameLabelKey] = subsetName
 	set.Spec.Template.Labels[alpha1.ControllerRevisionHashLabelKey] = revision
-
-	set.Spec.RevisionHistoryLimit = ud.Spec.Template.StatefulSetTemplate.Spec.RevisionHistoryLimit
-	set.Spec.PodManagementPolicy = ud.Spec.Template.StatefulSetTemplate.Spec.PodManagementPolicy
-	set.Spec.ServiceName = ud.Spec.Template.StatefulSetTemplate.Spec.ServiceName
-	set.Spec.VolumeClaimTemplates = ud.Spec.Template.StatefulSetTemplate.Spec.VolumeClaimTemplates
 
 	attachNodeAffinity(&set.Spec.Template.Spec, subSetConfig)
 	attachTolerations(&set.Spec.Template.Spec, subSetConfig)
@@ -164,17 +162,17 @@ func (a *StatefulSetAdapter) ApplySubsetTemplate(ud *alpha1.UnitedDeployment, su
 		TemplateSpecBytes, _ := json.Marshal(set.Spec.Template)
 		modified, err := strategicpatch.StrategicMergePatch(TemplateSpecBytes, subSetConfig.Patch.Raw, &corev1.PodTemplateSpec{})
 		if err != nil {
-			klog.Errorf("failed to merge patch raw %s", subSetConfig.Patch.Raw)
+			klog.ErrorS(err, "Failed to merge patch raw", "patch", subSetConfig.Patch.Raw)
 			return err
 		}
 		patchedTemplateSpec := corev1.PodTemplateSpec{}
 		if err = json.Unmarshal(modified, &patchedTemplateSpec); err != nil {
-			klog.Errorf("failed to unmarshal %s to podTemplateSpec", modified)
+			klog.ErrorS(err, "Failed to unmarshal modified JSON to podTemplateSpec", "JSON", modified)
 			return err
 		}
 
 		set.Spec.Template = patchedTemplateSpec
-		klog.V(2).Infof("StatefulSet [%s/%s] was patched successfully: %s", set.Namespace, set.GenerateName, subSetConfig.Patch.Raw)
+		klog.V(2).InfoS("StatefulSet was patched successfully", "statefulSet", klog.KRef(set.Namespace, set.GenerateName), "patch", subSetConfig.Patch.Raw)
 	}
 	if set.Annotations == nil {
 		set.Annotations = make(map[string]string)
@@ -185,7 +183,7 @@ func (a *StatefulSetAdapter) ApplySubsetTemplate(ud *alpha1.UnitedDeployment, su
 }
 
 // PostUpdate does some works after subset updated. StatefulSet will implement this method to clean stuck pods.
-func (a *StatefulSetAdapter) PostUpdate(ud *alpha1.UnitedDeployment, obj runtime.Object, revision string, partition int32) error {
+func (a *StatefulSetAdapter) PostUpdate(_ *alpha1.UnitedDeployment, obj runtime.Object, revision string, partition int32) error {
 	set := obj.(*appsv1.StatefulSet)
 	if set.Spec.UpdateStrategy.Type == appsv1.OnDeleteStatefulSetStrategyType {
 		return nil
@@ -193,12 +191,6 @@ func (a *StatefulSetAdapter) PostUpdate(ud *alpha1.UnitedDeployment, obj runtime
 
 	// If RollingUpdate, work around for issue https://github.com/kubernetes/kubernetes/issues/67250
 	return a.deleteStuckPods(set, revision, partition)
-}
-
-// IsExpected checks the subset is the expected revision or not.
-// The revision label can tell the current subset revision.
-func (a *StatefulSetAdapter) IsExpected(obj metav1.Object, revision string) bool {
-	return obj.GetLabels()[alpha1.ControllerRevisionHashLabelKey] != revision
 }
 
 func (a *StatefulSetAdapter) getStatefulSetPods(set *appsv1.StatefulSet) ([]*corev1.Pod, error) {
@@ -232,22 +224,6 @@ func (a *StatefulSetAdapter) getStatefulSetPods(set *appsv1.StatefulSet) ([]*cor
 	return claimedPods, nil
 }
 
-func calculateUpdatedReplicas(podList []*corev1.Pod, updatedRevision string) (updatedReplicas, updatedReadyReplicas int32) {
-	for _, pod := range podList {
-		revision := getRevision(&pod.ObjectMeta)
-
-		// Only count pods that are updated and are not terminating
-		if revision == updatedRevision && pod.GetDeletionTimestamp() == nil {
-			updatedReplicas++
-			if podutil.IsPodReady(pod) {
-				updatedReadyReplicas++
-			}
-		}
-	}
-
-	return
-}
-
 // deleteStuckPods tries to work around the blocking issue https://github.com/kubernetes/kubernetes/issues/67250
 func (a *StatefulSetAdapter) deleteStuckPods(set *appsv1.StatefulSet, revision string, partition int32) error {
 	pods, err := a.getStatefulSetPods(set)
@@ -259,7 +235,7 @@ func (a *StatefulSetAdapter) deleteStuckPods(set *appsv1.StatefulSet, revision s
 		pod := pods[i]
 		// If the pod is considered as stuck, delete it.
 		if isPodStuckForRollingUpdate(pod, revision, partition) {
-			klog.V(2).Infof("Delete pod %s/%s at stuck state", pod.Namespace, pod.Name)
+			klog.V(2).InfoS("Deleted pod at stuck state", "pod", klog.KObj(pod))
 			err = a.Delete(context.TODO(), pod, client.PropagationPolicy(metav1.DeletePropagationBackground))
 			if err != nil {
 				return err

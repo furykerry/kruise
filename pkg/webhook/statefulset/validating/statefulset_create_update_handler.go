@@ -21,13 +21,17 @@ import (
 	"fmt"
 	"net/http"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
-	"github.com/openkruise/kruise/pkg/util"
-	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
+	"github.com/openkruise/kruise/pkg/features"
+	"github.com/openkruise/kruise/pkg/util"
+	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
+	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 )
 
 // StatefulSetCreateUpdateHandler handles StatefulSet
@@ -36,7 +40,7 @@ type StatefulSetCreateUpdateHandler struct {
 	// - uncomment it
 	// - import sigs.k8s.io/controller-runtime/pkg/client
 	// - uncomment the InjectClient method at the bottom of this file.
-	// Client  client.Client
+	Client client.Client
 
 	// Decoder decodes objects
 	Decoder *admission.Decoder
@@ -70,6 +74,12 @@ func (h *StatefulSetCreateUpdateHandler) Handle(ctx context.Context, req admissi
 		if allErrs := append(validationErrorList, updateErrorList...); len(allErrs) > 0 {
 			return admission.Errored(http.StatusUnprocessableEntity, allErrs.ToAggregate())
 		}
+		if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoResizePVCGate) {
+			vctUpdateErr := ValidateVolumeClaimTemplateUpdate(h.Client, obj, oldObj)
+			if len(vctUpdateErr) > 0 {
+				return admission.Errored(http.StatusUnprocessableEntity, vctUpdateErr.ToAggregate())
+			}
+		}
 
 		if obj.Spec.UpdateStrategy.RollingUpdate != nil &&
 			obj.Spec.UpdateStrategy.RollingUpdate.PodUpdatePolicy == appsv1beta1.InPlaceOnlyPodUpdateStrategyType {
@@ -78,9 +88,10 @@ func (h *StatefulSetCreateUpdateHandler) Handle(ctx context.Context, req admissi
 					fmt.Errorf("invalid template modified with InPlaceOnly strategy: %v, currently only image update is allowed for InPlaceOnly", err))
 			}
 		}
+
 	case admissionv1.Delete:
 		if len(req.OldObject.Raw) == 0 {
-			klog.Warningf("Skip to validate StatefulSet %s/%s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Namespace, req.Name)
+			klog.InfoS("Skip to validate StatefulSet deletion for no old object, maybe because of Kubernetes version < 1.16", "namespace", req.Namespace, "name", req.Name)
 			return admission.ValidationResponse(true, "")
 		}
 		if err := h.decodeOldObject(req, oldObj); err != nil {
@@ -139,11 +150,3 @@ func (h *StatefulSetCreateUpdateHandler) decodeOldObject(req admission.Request, 
 //	h.Client = c
 //	return nil
 //}
-
-var _ admission.DecoderInjector = &StatefulSetCreateUpdateHandler{}
-
-// InjectDecoder injects the decoder into the StatefulSetCreateUpdateHandler
-func (h *StatefulSetCreateUpdateHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
-}

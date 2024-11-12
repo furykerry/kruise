@@ -57,25 +57,28 @@ func (a *DeploymentAdapter) GetStatusObservedGeneration(obj metav1.Object) int64
 	return obj.(*appsv1.Deployment).Status.ObservedGeneration
 }
 
-// GetReplicaDetails returns the replicas detail the subset needs.
-func (a *DeploymentAdapter) GetReplicaDetails(obj metav1.Object, updatedRevision string) (specReplicas, specPartition *int32, statusReplicas, statusReadyReplicas, statusUpdatedReplicas, statusUpdatedReadyReplicas int32, err error) {
-	// Convert to Deployment Object
+func (a *DeploymentAdapter) GetSubsetPods(obj metav1.Object) ([]*corev1.Pod, error) {
 	set := obj.(*appsv1.Deployment)
+	return a.getDeploymentPods(set)
+}
 
-	// Get all pods belonging to deployment
-	var pods []*corev1.Pod
-	pods, err = a.getDeploymentPods(set)
-	if err != nil {
-		return
-	}
+func (a *DeploymentAdapter) GetSpecReplicas(obj metav1.Object) *int32 {
+	set := obj.(*appsv1.Deployment)
+	return set.Spec.Replicas
+}
 
-	// Set according replica counts
-	specReplicas = set.Spec.Replicas
-	statusReplicas = set.Status.Replicas
-	statusReadyReplicas = set.Status.ReadyReplicas
-	statusUpdatedReplicas, statusUpdatedReadyReplicas = calculateUpdatedReplicas(pods, updatedRevision)
+func (a *DeploymentAdapter) GetSpecPartition(_ metav1.Object, _ []*corev1.Pod) *int32 {
+	return nil
+}
 
-	return
+func (a *DeploymentAdapter) GetStatusReplicas(obj metav1.Object) int32 {
+	set := obj.(*appsv1.Deployment)
+	return set.Status.Replicas
+}
+
+func (a *DeploymentAdapter) GetStatusReadyReplicas(obj metav1.Object) int32 {
+	set := obj.(*appsv1.Deployment)
+	return set.Status.ReadyReplicas
 }
 
 // GetSubsetFailure returns the failure information of the subset.
@@ -85,7 +88,7 @@ func (a *DeploymentAdapter) GetSubsetFailure() *string {
 }
 
 // ApplySubsetTemplate updates the subset to the latest revision, depending on the DeploymentTemplate.
-func (a *DeploymentAdapter) ApplySubsetTemplate(ud *alpha1.UnitedDeployment, subsetName, revision string, replicas, partition int32, obj runtime.Object) error {
+func (a *DeploymentAdapter) ApplySubsetTemplate(ud *alpha1.UnitedDeployment, subsetName, revision string, replicas, _ int32, obj runtime.Object) error {
 	// Convert to Deployment Object
 	set := obj.(*appsv1.Deployment)
 
@@ -137,15 +140,14 @@ func (a *DeploymentAdapter) ApplySubsetTemplate(ud *alpha1.UnitedDeployment, sub
 		return err
 	}
 
+	set.Spec = *ud.Spec.Template.DeploymentTemplate.Spec.DeepCopy()
 	set.Spec.Selector = selectors
 	set.Spec.Replicas = &replicas
-	set.Spec.Template = *ud.Spec.Template.DeploymentTemplate.Spec.Template.DeepCopy()
 	if set.Spec.Template.Labels == nil {
 		set.Spec.Template.Labels = map[string]string{}
 	}
 	set.Spec.Template.Labels[alpha1.SubSetNameLabelKey] = subsetName
 	set.Spec.Template.Labels[alpha1.ControllerRevisionHashLabelKey] = revision
-	set.Spec.RevisionHistoryLimit = ud.Spec.Template.DeploymentTemplate.Spec.RevisionHistoryLimit
 
 	attachNodeAffinity(&set.Spec.Template.Spec, subSetConfig)
 	attachTolerations(&set.Spec.Template.Spec, subSetConfig)
@@ -154,17 +156,17 @@ func (a *DeploymentAdapter) ApplySubsetTemplate(ud *alpha1.UnitedDeployment, sub
 		TemplateSpecBytes, _ := json.Marshal(set.Spec.Template)
 		modified, err := strategicpatch.StrategicMergePatch(TemplateSpecBytes, subSetConfig.Patch.Raw, &corev1.PodTemplateSpec{})
 		if err != nil {
-			klog.Errorf("failed to merge patch raw %s", subSetConfig.Patch.Raw)
+			klog.ErrorS(err, "Failed to merge patch raw", "patch", subSetConfig.Patch.Raw)
 			return err
 		}
 		patchedTemplateSpec := corev1.PodTemplateSpec{}
 		if err = json.Unmarshal(modified, &patchedTemplateSpec); err != nil {
-			klog.Errorf("failed to unmarshal %s to podTemplateSpec", modified)
+			klog.ErrorS(err, "Failed to unmarshal modified JSON to podTemplateSpec", "JSON", modified)
 			return err
 		}
 
 		set.Spec.Template = patchedTemplateSpec
-		klog.V(2).Infof("Deployment [%s/%s] was patched successfully: %s", set.Namespace, set.GenerateName, subSetConfig.Patch.Raw)
+		klog.V(2).InfoS("Deployment was patched successfully", "deployment", klog.KRef(set.Namespace, set.GenerateName), "patch", subSetConfig.Patch.Raw)
 	}
 	if set.Annotations == nil {
 		set.Annotations = make(map[string]string)
@@ -175,14 +177,8 @@ func (a *DeploymentAdapter) ApplySubsetTemplate(ud *alpha1.UnitedDeployment, sub
 }
 
 // PostUpdate does some works after subset updated. Deployments typically don't have post update operations.
-func (a *DeploymentAdapter) PostUpdate(ud *alpha1.UnitedDeployment, obj runtime.Object, revision string, partition int32) error {
+func (a *DeploymentAdapter) PostUpdate(_ *alpha1.UnitedDeployment, _ runtime.Object, _ string, _ int32) error {
 	return nil
-}
-
-// IsExpected checks the subset is the expected revision or not.
-// The revision label can tell the current subset revision.
-func (a *DeploymentAdapter) IsExpected(obj metav1.Object, revision string) bool {
-	return obj.GetLabels()[appsv1.ControllerRevisionHashLabelKey] != revision
 }
 
 // getDeploymentPods gets all Pods under a Deployment object

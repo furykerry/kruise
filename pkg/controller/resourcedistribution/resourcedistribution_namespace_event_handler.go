@@ -39,15 +39,15 @@ type enqueueRequestForNamespace struct {
 	reader client.Reader
 }
 
-func (p *enqueueRequestForNamespace) Create(evt event.CreateEvent, q workqueue.RateLimitingInterface) {
+func (p *enqueueRequestForNamespace) Create(ctx context.Context, evt event.CreateEvent, q workqueue.RateLimitingInterface) {
 	p.addNamespace(q, evt.Object, matchViaTargets)
 }
-func (p *enqueueRequestForNamespace) Delete(evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
+func (p *enqueueRequestForNamespace) Delete(ctx context.Context, evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
 	p.addNamespace(q, evt.Object, matchViaIncludedNamespaces)
 }
-func (p *enqueueRequestForNamespace) Generic(evt event.GenericEvent, q workqueue.RateLimitingInterface) {
+func (p *enqueueRequestForNamespace) Generic(ctx context.Context, evt event.GenericEvent, q workqueue.RateLimitingInterface) {
 }
-func (p *enqueueRequestForNamespace) Update(evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
+func (p *enqueueRequestForNamespace) Update(ctx context.Context, evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
 	p.updateNamespace(q, evt.ObjectOld, evt.ObjectNew)
 }
 
@@ -61,7 +61,7 @@ func (p *enqueueRequestForNamespace) addNamespace(q workqueue.RateLimitingInterf
 
 	resourceDistributions, err := p.getNamespaceMatchedResourceDistributions(namespace, fn)
 	if err != nil {
-		klog.Errorf("unable to get the ResourceDistributions related with namespace %s, err: %v", namespace.Name, err)
+		klog.ErrorS(err, "Unable to get the ResourceDistributions related with namespace", "namespace", namespace.Name)
 		return
 	}
 	addMatchedResourceDistributionToWorkQueue(q, resourceDistributions)

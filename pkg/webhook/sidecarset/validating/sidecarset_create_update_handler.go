@@ -43,7 +43,6 @@ import (
 	corevalidation "k8s.io/kubernetes/pkg/apis/core/validation"
 	"k8s.io/kubernetes/pkg/fieldpath"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -91,6 +90,9 @@ func (h *SidecarSetCreateUpdateHandler) validateSidecarSet(obj *appsv1alpha1.Sid
 	if older != nil {
 		allErrs = append(allErrs, validateSidecarContainerConflict(obj.Spec.Containers, older.Spec.Containers, field.NewPath("spec.containers"))...)
 	}
+	if len(allErrs) != 0 {
+		return allErrs
+	}
 	// iterate across all containers in other sidecarsets to avoid duplication of name
 	sidecarSets := &appsv1alpha1.SidecarSetList{}
 	if err := h.Client.List(context.TODO(), sidecarSets, &client.ListOptions{}); err != nil {
@@ -113,6 +115,12 @@ func validateSidecarSetName(name string, prefix bool) (allErrs []string) {
 func (h *SidecarSetCreateUpdateHandler) validateSidecarSetSpec(obj *appsv1alpha1.SidecarSet, fldPath *field.Path) field.ErrorList {
 	spec := &obj.Spec
 	allErrs := field.ErrorList{}
+	// currently when initContainer restartPolicy = Always, kruise don't support in-place update
+	for _, c := range obj.Spec.InitContainers {
+		if sidecarcontrol.IsSidecarContainer(c.Container) && obj.Spec.UpdateStrategy.Type == appsv1alpha1.RollingUpdateSidecarSetStrategyType {
+			allErrs = append(allErrs, field.Required(fldPath.Child("updateStrategy"), "The initContainer in-place upgrade is not currently supported."))
+		}
+	}
 
 	//validate spec selector
 	if spec.Selector == nil {
@@ -491,20 +499,4 @@ func (h *SidecarSetCreateUpdateHandler) Handle(ctx context.Context, req admissio
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 	return admission.ValidationResponse(allowed, reason)
-}
-
-var _ inject.Client = &SidecarSetCreateUpdateHandler{}
-
-// InjectClient injects the client into the SidecarSetCreateUpdateHandler
-func (h *SidecarSetCreateUpdateHandler) InjectClient(c client.Client) error {
-	h.Client = c
-	return nil
-}
-
-var _ admission.DecoderInjector = &SidecarSetCreateUpdateHandler{}
-
-// InjectDecoder injects the decoder into the SidecarSetCreateUpdateHandler
-func (h *SidecarSetCreateUpdateHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
 }

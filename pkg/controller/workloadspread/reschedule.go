@@ -20,6 +20,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/openkruise/kruise/pkg/controller/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
@@ -46,7 +47,7 @@ func (r *ReconcileWorkloadSpread) rescheduleSubset(ws *appsv1alpha1.WorkloadSpre
 	}
 	unschedulable := len(scheduleFailedPods) > 0
 	if unschedulable {
-		klog.V(3).Infof("Subset (%s) of WorkloadSpread (%s/%s) is unschedulable", subsetStatus.Name, ws.Namespace, ws.Name)
+		klog.V(3).InfoS("Subset of WorkloadSpread is unschedulable", "subsetName", subsetStatus.Name, "workloadSpread", klog.KObj(ws))
 	}
 
 	oldCondition := GetWorkloadSpreadSubsetCondition(oldSubsetStatus, appsv1alpha1.SubsetSchedulable)
@@ -104,34 +105,16 @@ func (r *ReconcileWorkloadSpread) deletePodsForSubset(ws *appsv1alpha1.WorkloadS
 				pod.Namespace, pod.Name, subsetName, ws.Namespace, ws.Name)
 			return err
 		}
-		klog.V(3).Infof("WorkloadSpread (%s/%s) delete unschedulabe Pod (%s/%s) in Subset %s successfully",
-			ws.Namespace, ws.Name, pod.Namespace, pod.Name, subsetName)
+		klog.V(3).InfoS("WorkloadSpread deleted unschedulabe Pod in Subset successfully", "workloadSpread", klog.KObj(ws), "pod", klog.KObj(pod), "subsetName", subsetName)
 	}
 	return nil
 }
 
 // PodUnscheduledTimeout return true when Pod was scheduled failed and timeout.
 func PodUnscheduledTimeout(ws *appsv1alpha1.WorkloadSpread, pod *corev1.Pod) bool {
-	if pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodPending || pod.Spec.NodeName != "" {
-		return false
+	timeouted, nextCheckAfter := util.GetTimeBeforePendingTimeout(pod, time.Second*time.Duration(*ws.Spec.ScheduleStrategy.Adaptive.RescheduleCriticalSeconds))
+	if nextCheckAfter > 0 {
+		durationStore.Push(getWorkloadSpreadKey(ws), nextCheckAfter)
 	}
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse &&
-			condition.Reason == corev1.PodReasonUnschedulable {
-			currentTime := time.Now()
-			rescheduleCriticalSeconds := *ws.Spec.ScheduleStrategy.Adaptive.RescheduleCriticalSeconds
-
-			expectSchedule := pod.CreationTimestamp.Add(time.Second * time.Duration(rescheduleCriticalSeconds))
-			// schedule timeout
-			if expectSchedule.Before(currentTime) {
-				return true
-			}
-
-			// no timeout, requeue key when expectSchedule is equal to time.Now()
-			durationStore.Push(getWorkloadSpreadKey(ws), expectSchedule.Sub(currentTime))
-
-			return false
-		}
-	}
-	return false
+	return timeouted
 }

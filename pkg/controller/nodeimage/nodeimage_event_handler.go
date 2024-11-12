@@ -20,8 +20,6 @@ import (
 	"context"
 	"reflect"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	utilimagejob "github.com/openkruise/kruise/pkg/util/imagejob"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,6 +29,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	utilimagejob "github.com/openkruise/kruise/pkg/util/imagejob"
 )
 
 const (
@@ -43,7 +44,7 @@ type nodeHandler struct {
 
 var _ handler.EventHandler = &nodeHandler{}
 
-func (e *nodeHandler) Create(evt event.CreateEvent, q workqueue.RateLimitingInterface) {
+func (e *nodeHandler) Create(ctx context.Context, evt event.CreateEvent, q workqueue.RateLimitingInterface) {
 	node := evt.Object.(*v1.Node)
 	if node.Labels["type"] == VirtualKubelet {
 		return
@@ -55,10 +56,10 @@ func (e *nodeHandler) Create(evt event.CreateEvent, q workqueue.RateLimitingInte
 	e.nodeCreateOrUpdate(node, q)
 }
 
-func (e *nodeHandler) Generic(evt event.GenericEvent, q workqueue.RateLimitingInterface) {
+func (e *nodeHandler) Generic(ctx context.Context, evt event.GenericEvent, q workqueue.RateLimitingInterface) {
 }
 
-func (e *nodeHandler) Update(evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
+func (e *nodeHandler) Update(ctx context.Context, evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
 	node := evt.ObjectNew.(*v1.Node)
 	if node.Labels["type"] == VirtualKubelet {
 		return
@@ -70,7 +71,7 @@ func (e *nodeHandler) Update(evt event.UpdateEvent, q workqueue.RateLimitingInte
 	}
 }
 
-func (e *nodeHandler) Delete(evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
+func (e *nodeHandler) Delete(ctx context.Context, evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
 	node := evt.Object.(*v1.Node)
 	if node.Labels["type"] == VirtualKubelet {
 		return
@@ -83,26 +84,26 @@ func (e *nodeHandler) nodeCreateOrUpdate(node *v1.Node, q workqueue.RateLimiting
 	namespacedName := types.NamespacedName{Name: node.Name}
 	if err := e.Get(context.TODO(), namespacedName, nodeImage); err != nil {
 		if errors.IsNotFound(err) {
-			klog.Infof("Node create event for nodeimage %v", node.Name)
+			klog.InfoS("Node created event for nodeimage", "nodeImageName", node.Name)
 			if isReady, delay := getNodeReadyAndDelayTime(node); !isReady {
-				klog.Infof("Skip to enqueue Node %s with not NodeImage, for not ready yet.", node.Name)
+				klog.InfoS("Skipped to enqueue Node with not NodeImage, for not ready yet", "nodeImageName", node.Name)
 				return
 			} else if delay > 0 {
-				klog.Infof("Enqueue Node %s with not NodeImage after %v.", node.Name, delay)
+				klog.InfoS("Enqueue Node with not NodeImage after delay", "nodeImageName", node.Name, "delay", delay)
 				q.AddAfter(reconcile.Request{NamespacedName: namespacedName}, delay)
 				return
 			}
-			klog.Infof("Enqueue Node %s with not NodeImage.", node.Name)
+			klog.InfoS("Enqueue Node with not NodeImage", "nodeImageName", node.Name)
 			q.Add(reconcile.Request{NamespacedName: namespacedName})
 			return
 		}
-		klog.Errorf("Failed to get NodeImage for Node %s: %v", node.Name, err)
+		klog.ErrorS(err, "Failed to get NodeImage for Node", "nodeImageName", node.Name)
 		return
 	}
 	if reflect.DeepEqual(node.Labels, nodeImage.Labels) {
 		return
 	}
-	klog.Infof("Node update labels for nodeimage %v", node.Name)
+	klog.InfoS("Node updated labels for NodeImage", "nodeImageName", node.Name)
 	q.Add(reconcile.Request{NamespacedName: namespacedName})
 }
 
@@ -112,7 +113,7 @@ func (e *nodeHandler) nodeDelete(node *v1.Node, q workqueue.RateLimitingInterfac
 	if err := e.Get(context.TODO(), namespacedName, nodeImage); errors.IsNotFound(err) {
 		return
 	}
-	klog.Infof("Node delete event for nodeimage %v", node.Name)
+	klog.InfoS("Node deleted event for NodeImage", "nodeImageName", node.Name)
 	q.Add(reconcile.Request{NamespacedName: namespacedName})
 }
 
@@ -120,16 +121,16 @@ type imagePullJobHandler struct {
 	client.Reader
 }
 
-func (e *imagePullJobHandler) Create(evt event.CreateEvent, q workqueue.RateLimitingInterface) {
+func (e *imagePullJobHandler) Create(ctx context.Context, evt event.CreateEvent, q workqueue.RateLimitingInterface) {
 }
 
-func (e *imagePullJobHandler) Generic(evt event.GenericEvent, q workqueue.RateLimitingInterface) {
+func (e *imagePullJobHandler) Generic(ctx context.Context, evt event.GenericEvent, q workqueue.RateLimitingInterface) {
 }
 
-func (e *imagePullJobHandler) Update(evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
+func (e *imagePullJobHandler) Update(ctx context.Context, evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
 }
 
-func (e *imagePullJobHandler) Delete(evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
+func (e *imagePullJobHandler) Delete(ctx context.Context, evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
 	job := evt.Object.(*appsv1alpha1.ImagePullJob)
 	nodeImageNames := utilimagejob.PopCachedNodeImagesForJob(job)
 	for _, name := range nodeImageNames {

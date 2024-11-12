@@ -21,12 +21,13 @@ import (
 	"fmt"
 	"net/http"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	"github.com/openkruise/kruise/pkg/util"
-	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	"github.com/openkruise/kruise/pkg/util"
+	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 )
 
 // UnitedDeploymentCreateUpdateHandler handles UnitedDeployment
@@ -71,7 +72,7 @@ func (h *UnitedDeploymentCreateUpdateHandler) Handle(ctx context.Context, req ad
 		}
 	case admissionv1.Delete:
 		if len(req.OldObject.Raw) == 0 {
-			klog.Warningf("Skip to validate UnitedDeployment %s/%s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Namespace, req.Name)
+			klog.InfoS("Skip to validate UnitedDeployment deletion for no old object, maybe because of Kubernetes version < 1.16", "namespace", req.Namespace, "name", req.Name)
 			return admission.ValidationResponse(true, "")
 		}
 		if err := h.Decoder.DecodeRaw(req.AdmissionRequest.OldObject, oldObj); err != nil {
@@ -85,12 +86,4 @@ func (h *UnitedDeploymentCreateUpdateHandler) Handle(ctx context.Context, req ad
 	}
 
 	return admission.ValidationResponse(true, "")
-}
-
-var _ admission.DecoderInjector = &UnitedDeploymentCreateUpdateHandler{}
-
-// InjectDecoder injects the decoder into the UnitedDeploymentCreateUpdateHandler
-func (h *UnitedDeploymentCreateUpdateHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
 }

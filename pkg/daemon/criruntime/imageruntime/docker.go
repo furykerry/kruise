@@ -21,15 +21,16 @@ import (
 	"io"
 	"sync"
 
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	daemonutil "github.com/openkruise/kruise/pkg/daemon/util"
+	"github.com/openkruise/kruise/pkg/util/secret"
+
 	dockertypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/image"
 	dockerapi "github.com/docker/docker/client"
 	v1 "k8s.io/api/core/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
-
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	daemonutil "github.com/openkruise/kruise/pkg/daemon/util"
-	"github.com/openkruise/kruise/pkg/util/secret"
 )
 
 // NewDockerImageService create a docker runtime
@@ -80,26 +81,26 @@ func (d *dockerImageService) PullImage(ctx context.Context, imageName, tag strin
 	fullName := imageName + ":" + tag
 	var ioReader io.ReadCloser
 
-	if len(pullSecrets) > 0 {
-		var authInfos []daemonutil.AuthInfo
-		authInfos, err = secret.ConvertToRegistryAuths(pullSecrets, registry)
-		if err == nil {
-			var pullErrs []error
-			for _, authInfo := range authInfos {
-				var pullErr error
-				klog.V(5).Infof("Pull image %v:%v with user %v", imageName, tag, authInfo.Username)
-				ioReader, pullErr = d.client.ImagePull(ctx, fullName, dockertypes.ImagePullOptions{RegistryAuth: authInfo.EncodeToString()})
-				if pullErr == nil {
-					return newImagePullStatusReader(ioReader), nil
-				}
-				d.handleRuntimeError(pullErr)
-				klog.Warningf("Failed to pull image %v:%v with user %v, err %v", imageName, tag, authInfo.Username, pullErr)
-				pullErrs = append(pullErrs, pullErr)
+	var authInfos []daemonutil.AuthInfo
+	authInfos, err = secret.ConvertToRegistryAuths(pullSecrets, registry)
+	if err == nil {
+		var pullErrs []error
+		for _, authInfo := range authInfos {
+			var pullErr error
+			klog.V(5).InfoS("Pull image with user", "imageName", imageName, "tag", tag, "user", authInfo.Username)
+			ioReader, pullErr = d.client.ImagePull(ctx, fullName, dockertypes.ImagePullOptions{RegistryAuth: authInfo.EncodeToString()})
+			if pullErr == nil {
+				return newImagePullStatusReader(ioReader), nil
 			}
-			if len(pullErrs) > 0 {
-				err = utilerrors.NewAggregate(pullErrs)
-			}
+			d.handleRuntimeError(pullErr)
+			klog.ErrorS(pullErr, "Failed to pull image with user", "imageName", imageName, "tag", tag, "user", authInfo.Username)
+			pullErrs = append(pullErrs, pullErr)
 		}
+		if len(pullErrs) > 0 {
+			err = utilerrors.NewAggregate(pullErrs)
+		}
+	} else {
+		klog.ErrorS(err, "Failed to convert to auth info for registry")
 	}
 
 	// Try the default secret
@@ -108,16 +109,16 @@ func (d *dockerImageService) PullImage(ctx context.Context, imageName, tag strin
 		var defaultErr error
 		authInfo, defaultErr = d.accountManager.GetAccountInfo(registry)
 		if defaultErr != nil {
-			klog.Warningf("Failed to get account for registry %v, err %v", registry, defaultErr)
+			klog.ErrorS(defaultErr, "Failed to get account for registry", "registry", registry)
 			// When the default account acquisition fails, try to pull anonymously
 		} else if authInfo != nil {
-			klog.V(5).Infof("Pull image %v:%v with user %v", imageName, tag, authInfo.Username)
+			klog.V(5).InfoS("Pull image with user", "imageName", imageName, "tag", tag, "user", authInfo.Username)
 			ioReader, err = d.client.ImagePull(ctx, fullName, dockertypes.ImagePullOptions{RegistryAuth: authInfo.EncodeToString()})
 			if err == nil {
 				return newImagePullStatusReader(ioReader), nil
 			}
 			d.handleRuntimeError(err)
-			klog.Warningf("Failed to pull image %v:%v, err %v", imageName, tag, err)
+			klog.ErrorS(err, "Failed to pull image", "imageName", imageName, "tag", tag)
 		}
 	}
 
@@ -126,10 +127,11 @@ func (d *dockerImageService) PullImage(ctx context.Context, imageName, tag strin
 	}
 
 	// Anonymous pull
-	klog.V(5).Infof("Pull image %v:%v anonymous", imageName, tag)
+	klog.V(5).InfoS("Pull image anonymously", "imageName", imageName, "tag", tag)
 	ioReader, err = d.client.ImagePull(ctx, fullName, dockertypes.ImagePullOptions{})
 	if err != nil {
 		d.handleRuntimeError(err)
+		klog.ErrorS(err, "Failed to pull image", "imageName", imageName, "tag", tag)
 		return nil, err
 	}
 	return newImagePullStatusReader(ioReader), nil
@@ -139,7 +141,7 @@ func (d *dockerImageService) ListImages(ctx context.Context) ([]ImageInfo, error
 	if err := d.createRuntimeClientIfNecessary(); err != nil {
 		return nil, err
 	}
-	infos, err := d.client.ImageList(ctx, dockertypes.ImageListOptions{All: true})
+	infos, err := d.client.ImageList(ctx, image.ListOptions{All: true})
 	if err != nil {
 		d.handleRuntimeError(err)
 		return nil, err
@@ -147,7 +149,7 @@ func (d *dockerImageService) ListImages(ctx context.Context) ([]ImageInfo, error
 	return newImageCollectionDocker(infos), nil
 }
 
-func newImageCollectionDocker(infos []dockertypes.ImageSummary) []ImageInfo {
+func newImageCollectionDocker(infos []image.Summary) []ImageInfo {
 	collection := make([]ImageInfo, 0, len(infos))
 	for _, info := range infos {
 		collection = append(collection, ImageInfo{

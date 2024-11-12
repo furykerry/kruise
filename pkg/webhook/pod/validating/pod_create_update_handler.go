@@ -20,14 +20,13 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/openkruise/kruise/pkg/features"
-	"github.com/openkruise/kruise/pkg/util/controllerfinder"
-	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/openkruise/kruise/pkg/features"
+	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
 )
 
 // PodCreateHandler handles Pod
@@ -40,14 +39,12 @@ type PodCreateHandler struct {
 
 	// Decoder decodes objects
 	Decoder *admission.Decoder
-
-	finders *controllerfinder.ControllerFinder
 }
 
 func (h *PodCreateHandler) validatingPodFn(ctx context.Context, req admission.Request) (allowed bool, reason string, err error) {
 	allowed = true
 	if req.Operation == admissionv1.Delete && len(req.OldObject.Raw) == 0 {
-		klog.Warningf("Skip to validate pod %s/%s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Namespace, req.Name)
+		klog.InfoS("Skip to validate pod deletion for no old object, maybe because of Kubernetes version < 1.16", "namespace", req.Namespace, "name", req.Name)
 		return
 	}
 
@@ -81,21 +78,4 @@ func (h *PodCreateHandler) Handle(ctx context.Context, req admission.Request) ad
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 	return admission.ValidationResponse(allowed, reason)
-}
-
-var _ inject.Client = &PodCreateHandler{}
-
-// InjectClient injects the client into the PodCreateHandler
-func (h *PodCreateHandler) InjectClient(c client.Client) error {
-	h.Client = c
-	h.finders = controllerfinder.Finder
-	return nil
-}
-
-var _ admission.DecoderInjector = &PodCreateHandler{}
-
-// InjectDecoder injects the decoder into the PodCreateHandler
-func (h *PodCreateHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
 }

@@ -20,8 +20,6 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/openkruise/kruise/pkg/util"
-	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 	admissionv1 "k8s.io/api/admission/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
@@ -29,8 +27,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/openkruise/kruise/pkg/util"
+	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 )
 
 type CRDHandler struct {
@@ -48,7 +48,7 @@ func (h *CRDHandler) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.ValidationResponse(true, "")
 	}
 	if len(req.OldObject.Raw) == 0 {
-		klog.Warningf("Skip to validate CRD %s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Name)
+		klog.InfoS("Skip to validate CRD %s deletion for no old object, maybe because of Kubernetes version < 1.16", "name", req.Name)
 		return admission.ValidationResponse(true, "")
 	}
 
@@ -80,7 +80,7 @@ func (h *CRDHandler) Handle(ctx context.Context, req admission.Request) admissio
 			}
 		}
 	default:
-		klog.Warningf("Skip to validate CRD %s deletion for unrecognized version %s", req.Name, req.Kind.Version)
+		klog.InfoS("Skip to validate CRD deletion for unrecognized version %s", "name", req.Name, "version", req.Kind.Version)
 		return admission.ValidationResponse(true, "")
 	}
 
@@ -90,18 +90,4 @@ func (h *CRDHandler) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.Errored(http.StatusForbidden, err)
 	}
 	return admission.ValidationResponse(true, "")
-}
-
-var _ inject.Client = &CRDHandler{}
-
-func (h *CRDHandler) InjectClient(c client.Client) error {
-	h.Client = c
-	return nil
-}
-
-var _ admission.DecoderInjector = &CRDHandler{}
-
-func (h *CRDHandler) InjectDecoder(d *admission.Decoder) error {
-	h.Decoder = d
-	return nil
 }

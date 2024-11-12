@@ -33,7 +33,7 @@ import (
 func CreateJobForWorkload(c client.Client, owner metav1.Object, gvk schema.GroupVersionKind, name, image string, labels map[string]string, annotations map[string]string, podSelector metav1.LabelSelector, pullSecrets []string) error {
 	var pullTimeoutSeconds int32 = 300
 	if str, ok := owner.GetAnnotations()[appsv1alpha1.ImagePreDownloadTimeoutSecondsKey]; ok {
-		if i, err := strconv.Atoi(str); err == nil {
+		if i, err := strconv.ParseInt(str, 10, 32); err == nil {
 			pullTimeoutSeconds = int32(i)
 		}
 	}
@@ -86,7 +86,7 @@ func DeleteJobsForWorkload(c client.Client, ownerObj metav1.Object) error {
 		if owner == nil || owner.UID != ownerObj.GetUID() {
 			continue
 		}
-		klog.Infof("Deleting ImagePullJob %s for workload %s %s/%s", job.Name, owner.Kind, ownerObj.GetNamespace(), ownerObj.GetName())
+		klog.InfoS("Deleting ImagePullJob for workload", "jobName", job.Name, "ownerKind", owner.Kind, "ownerNamespace", ownerObj.GetNamespace(), "ownerName", ownerObj.GetName())
 		if err := c.Delete(context.TODO(), job); err != nil {
 			return err
 		}

@@ -20,6 +20,8 @@ import (
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/credentialprovider/plugin"
 	"k8s.io/kubernetes/pkg/util/parsers"
 
 	"github.com/openkruise/kruise/pkg/util/secret"
@@ -30,7 +32,8 @@ func TestMatchRegistryAuths(t *testing.T) {
 		name       string
 		Image      string
 		GetSecrets func() []v1.Secret
-		Expect     int
+		// fix issue https://github.com/openkruise/kruise/issues/1583
+		ExpectMinValue int
 	}{
 		{
 			name:  "test1",
@@ -44,7 +47,7 @@ func TestMatchRegistryAuths(t *testing.T) {
 				}
 				return []v1.Secret{demo}
 			},
-			Expect: 1,
+			ExpectMinValue: 1,
 		},
 		{
 			name:  "test2",
@@ -58,7 +61,7 @@ func TestMatchRegistryAuths(t *testing.T) {
 				}
 				return []v1.Secret{demo}
 			},
-			Expect: 1,
+			ExpectMinValue: 1,
 		},
 		{
 			name:  "test3",
@@ -72,7 +75,7 @@ func TestMatchRegistryAuths(t *testing.T) {
 				}
 				return []v1.Secret{demo}
 			},
-			Expect: 1,
+			ExpectMinValue: 1,
 		},
 		{
 			name:  "test4",
@@ -86,7 +89,7 @@ func TestMatchRegistryAuths(t *testing.T) {
 				}
 				return []v1.Secret{demo}
 			},
-			Expect: 2,
+			ExpectMinValue: 1,
 		},
 		{
 			name:  "test5",
@@ -100,9 +103,28 @@ func TestMatchRegistryAuths(t *testing.T) {
 				}
 				return []v1.Secret{demo}
 			},
-			Expect: 0,
+			ExpectMinValue: 0,
+		},
+		{
+			name:  "test credential plugin if matched",
+			Image: "registry.plugin.com/test/echoserver:v1",
+			GetSecrets: func() []v1.Secret {
+				return []v1.Secret{}
+			},
+			ExpectMinValue: 1,
 		},
 	}
+	pluginBinDir := "fake_plugin"
+	pluginConfigFile := "fake_plugin/plugin-config.yaml"
+	// credential plugin is configured for images with "registry.plugin.com" and "registry.private.com",
+	// however, only images with "registry.plugin.com" will return a fake credential,
+	// other images will be denied by the plugin and an error will be raised,
+	// this is to test whether kruise could get expected auths if plugin fails to run
+	err := plugin.RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir)
+	if err != nil {
+		klog.ErrorS(err, "Failed to register credential provider plugins")
+	}
+	secret.MakeAndSetKeyring()
 	for _, cs := range cases {
 		t.Run(cs.name, func(t *testing.T) {
 			repoToPull, _, _, err := parsers.ParseImageName(cs.Image)
@@ -113,7 +135,7 @@ func TestMatchRegistryAuths(t *testing.T) {
 			if err != nil {
 				t.Fatalf("convertToRegistryAuths failed: %s", err.Error())
 			}
-			if len(infos) != cs.Expect {
+			if len(infos) < cs.ExpectMinValue {
 				t.Fatalf("convertToRegistryAuths failed")
 			}
 		})

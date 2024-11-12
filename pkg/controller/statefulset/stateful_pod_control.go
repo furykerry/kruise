@@ -23,12 +23,14 @@ import (
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	errorutils "k8s.io/apimachinery/pkg/util/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientset "k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	storagelisters "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
@@ -48,6 +50,7 @@ type StatefulPodControlObjectManager interface {
 	CreateClaim(claim *v1.PersistentVolumeClaim) error
 	GetClaim(namespace, claimName string) (*v1.PersistentVolumeClaim, error)
 	UpdateClaim(claim *v1.PersistentVolumeClaim) error
+	GetStorageClass(scName string) (*storagev1.StorageClass, error)
 }
 
 // StatefulPodControl defines the interface that StatefulSetController uses to create, update, and delete Pods,
@@ -63,9 +66,10 @@ func NewStatefulPodControl(
 	client clientset.Interface,
 	podLister corelisters.PodLister,
 	claimLister corelisters.PersistentVolumeClaimLister,
+	scLister storagelisters.StorageClassLister,
 	recorder record.EventRecorder,
 ) *StatefulPodControl {
-	return &StatefulPodControl{&realStatefulPodControlObjectManager{client, podLister, claimLister}, recorder}
+	return &StatefulPodControl{&realStatefulPodControlObjectManager{client, podLister, claimLister, scLister}, recorder}
 }
 
 // NewStatefulPodControlFromManager creates a StatefulPodControl using the given StatefulPodControlObjectManager and recorder.
@@ -78,6 +82,7 @@ type realStatefulPodControlObjectManager struct {
 	client      clientset.Interface
 	podLister   corelisters.PodLister
 	claimLister corelisters.PersistentVolumeClaimLister
+	scLister    storagelisters.StorageClassLister
 }
 
 func (om *realStatefulPodControlObjectManager) CreatePod(ctx context.Context, pod *v1.Pod) error {
@@ -110,6 +115,10 @@ func (om *realStatefulPodControlObjectManager) GetClaim(namespace, claimName str
 func (om *realStatefulPodControlObjectManager) UpdateClaim(claim *v1.PersistentVolumeClaim) error {
 	_, err := om.client.CoreV1().PersistentVolumeClaims(claim.Namespace).Update(context.TODO(), claim, metav1.UpdateOptions{})
 	return err
+}
+
+func (om *realStatefulPodControlObjectManager) GetStorageClass(scName string) (*storagev1.StorageClass, error) {
+	return om.scLister.Get(scName)
 }
 
 func (spc *StatefulPodControl) CreateStatefulPod(ctx context.Context, set *appsv1beta1.StatefulSet, pod *v1.Pod) error {
@@ -215,7 +224,7 @@ func (spc *StatefulPodControl) ClaimsMatchRetentionPolicy(set *appsv1beta1.State
 		claim, err := spc.objectMgr.GetClaim(set.Namespace, claimName)
 		switch {
 		case apierrors.IsNotFound(err):
-			klog.V(4).Infof("Expected claim %s missing, continuing to pick up in next iteration", claimName)
+			klog.V(4).InfoS("Expected claim missing, continuing to pick up in next iteration", "claimName", claimName)
 		case err != nil:
 			return false, fmt.Errorf("Could not retrieve claim %s for %s when checking PVC deletion policy", claimName, pod.Name)
 		default:
@@ -236,7 +245,7 @@ func (spc *StatefulPodControl) UpdatePodClaimForRetentionPolicy(set *appsv1beta1
 		claim, err := spc.objectMgr.GetClaim(set.Namespace, claimName)
 		switch {
 		case apierrors.IsNotFound(err):
-			klog.V(4).Infof("Expected claim %s missing, continuing to pick up in next iteration.", claimName)
+			klog.V(4).InfoS("Expected claim missing, continuing to pick up in next iteration", "claimName", claimName)
 		case err != nil:
 			return fmt.Errorf("Could not retrieve claim %s not found for %s when checking PVC deletion policy: %w", claimName, pod.Name, err)
 		default:
@@ -313,6 +322,22 @@ func (spc *StatefulPodControl) recordClaimEvent(verb string, set *appsv1beta1.St
 			strings.ToLower(verb), claim.Name, pod.Name, set.Name, err)
 		spc.recorder.Event(set, v1.EventTypeWarning, reason, message)
 	}
+}
+
+// createMissingPersistentVolumeClaims creates all of the required PersistentVolumeClaims for pod, and updates its retention policy
+func (spc *StatefulPodControl) createMissingPersistentVolumeClaims(ctx context.Context, set *appsv1beta1.StatefulSet, pod *v1.Pod) error {
+	if err := spc.createPersistentVolumeClaims(set, pod); err != nil {
+		return err
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoDeletePVC) {
+		// Set PVC policy as much as is possible at this point.
+		if err := spc.UpdatePodClaimForRetentionPolicy(set, pod); err != nil {
+			spc.recordPodEvent("update", set, pod, err)
+			return err
+		}
+	}
+	return nil
 }
 
 // createPersistentVolumeClaims creates all of the required PersistentVolumeClaims for pod, which must be a member of

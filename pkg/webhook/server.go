@@ -27,30 +27,30 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/conversion"
 
-	webhookutil "github.com/openkruise/kruise/pkg/webhook/util"
+	"github.com/openkruise/kruise/pkg/webhook/types"
 	webhookcontroller "github.com/openkruise/kruise/pkg/webhook/util/controller"
 	"github.com/openkruise/kruise/pkg/webhook/util/health"
 )
 
 type GateFunc func() (enabled bool)
+type HandlerPath2GetterMap = map[string]types.HandlerGetter
 
 var (
-	// HandlerMap contains all admission webhook handlers.
-	HandlerMap   = map[string]admission.Handler{}
+	// HandlerGetterMap contains all admission webhook handlers.
+	HandlerMap   = HandlerPath2GetterMap{}
 	handlerGates = map[string]GateFunc{}
 )
 
-func addHandlers(m map[string]admission.Handler) {
+func addHandlers(m HandlerPath2GetterMap) {
 	addHandlersWithGate(m, nil)
 }
 
-func addHandlersWithGate(m map[string]admission.Handler, fn GateFunc) {
+func addHandlersWithGate(m HandlerPath2GetterMap, fn GateFunc) {
 	for path, handler := range m {
 		if len(path) == 0 {
-			klog.Warningf("Skip handler with empty path.")
+			klog.Warning("Skip handler with empty path")
 			continue
 		}
 		if path[0] != '/' {
@@ -58,7 +58,7 @@ func addHandlersWithGate(m map[string]admission.Handler, fn GateFunc) {
 		}
 		_, found := HandlerMap[path]
 		if found {
-			klog.V(1).Infof("conflicting webhook builder path %v in handler map", path)
+			klog.V(1).InfoS("conflicting webhook builder path in handler map", "path", path)
 		}
 		HandlerMap[path] = handler
 		if fn != nil {
@@ -83,19 +83,16 @@ func filterActiveHandlers() {
 
 func SetupWithManager(mgr manager.Manager) error {
 	server := mgr.GetWebhookServer()
-	server.Host = "0.0.0.0"
-	server.Port = webhookutil.GetPort()
-	server.CertDir = webhookutil.GetCertDir()
 
 	// register admission handlers
 	filterActiveHandlers()
-	for path, handler := range HandlerMap {
-		server.Register(path, &webhook.Admission{Handler: handler})
-		klog.V(3).Infof("Registered webhook handler %s", path)
+	for path, handlerGetter := range HandlerMap {
+		server.Register(path, &webhook.Admission{Handler: handlerGetter(mgr)})
+		klog.V(3).InfoS("Registered webhook handler", "path", path)
 	}
 
 	// register conversion webhook
-	server.Register("/convert", &conversion.Webhook{})
+	server.Register("/convert", conversion.NewWebhookHandler(mgr.GetScheme()))
 
 	// register health handler
 	server.Register("/healthz", &health.Handler{})
@@ -146,7 +143,7 @@ func WaitReady() error {
 		}
 
 		if duration > time.Second*5 {
-			klog.Warningf("Failed to wait webhook ready over %s: %v", duration, err)
+			klog.ErrorS(err, "Failed to wait webhook ready", "duration", duration)
 		}
 		time.Sleep(time.Second * 2)
 	}

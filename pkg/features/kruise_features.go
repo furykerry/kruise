@@ -116,6 +116,21 @@ const (
 
 	// Enables a enhanced livenessProbe solution
 	EnhancedLivenessProbeGate featuregate.Feature = "EnhancedLivenessProbe"
+
+	// RecreatePodWhenChangeVCTInCloneSetGate recreate the pod upon changing volume claim templates in a clone set to ensure PVC consistency.
+	RecreatePodWhenChangeVCTInCloneSetGate featuregate.Feature = "RecreatePodWhenChangeVCTInCloneSetGate"
+
+	// Enables a StatefulSet to start from an arbitrary non zero ordinal
+	StatefulSetStartOrdinal featuregate.Feature = "StatefulSetStartOrdinal"
+
+	// Set pod completion index as a pod label for Indexed Jobs.
+	PodIndexLabel featuregate.Feature = "PodIndexLabel"
+
+	// Use certs generated externally
+	EnableExternalCerts featuregate.Feature = "EnableExternalCerts"
+
+	// Enables policies auto resizing PVCs created by a StatefulSet when user expands volumeClaimTemplates.
+	StatefulSetAutoResizePVCGate featuregate.Feature = "StatefulSetAutoResizePVCGate"
 )
 
 var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
@@ -145,7 +160,12 @@ var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	ResourceDistributionGate:              {Default: false, PreRelease: featuregate.Alpha},
 	DeletionProtectionForCRDCascadingGate: {Default: false, PreRelease: featuregate.Alpha},
 
-	EnhancedLivenessProbeGate: {Default: false, PreRelease: featuregate.Alpha},
+	EnhancedLivenessProbeGate:              {Default: false, PreRelease: featuregate.Alpha},
+	RecreatePodWhenChangeVCTInCloneSetGate: {Default: false, PreRelease: featuregate.Alpha},
+	StatefulSetStartOrdinal:                {Default: false, PreRelease: featuregate.Alpha},
+	PodIndexLabel:                          {Default: true, PreRelease: featuregate.Beta},
+	EnableExternalCerts:                    {Default: false, PreRelease: featuregate.Alpha},
+	StatefulSetAutoResizePVCGate:           {Default: false, PreRelease: featuregate.Alpha},
 }
 
 func init() {

@@ -94,17 +94,15 @@ func add(mgr manager.Manager, r *ReconcileImageListPullJob) error {
 	}
 
 	// Watch for changes to ImageListPullJob
-	err = c.Watch(&source.Kind{Type: &appsv1alpha1.ImageListPullJob{}}, &handler.EnqueueRequestForObject{})
+	err = c.Watch(source.Kind(mgr.GetCache(), &appsv1alpha1.ImageListPullJob{}), &handler.EnqueueRequestForObject{})
 	if err != nil {
 		return err
 	}
 	// Watch for changes to ImagePullJob
 	// todo the imagelistpulljob(status) will not change if  the pull job status does not change significantly (ex. number of failed nodeimage changes from 1 to 2)
-	err = c.Watch(&source.Kind{Type: &appsv1alpha1.ImagePullJob{}}, &imagePullJobEventHandler{
-		enqueueHandler: handler.EnqueueRequestForOwner{
-			IsController: true,
-			OwnerType:    &appsv1alpha1.ImageListPullJob{},
-		},
+	err = c.Watch(source.Kind(mgr.GetCache(), &appsv1alpha1.ImagePullJob{}), &imagePullJobEventHandler{
+		enqueueHandler: handler.EnqueueRequestForOwner(
+			mgr.GetScheme(), mgr.GetRESTMapper(), &appsv1alpha1.ImageListPullJob{}, handler.OnlyControllerOwner()),
 	})
 	if err != nil {
 		return err
@@ -130,7 +128,7 @@ type ReconcileImageListPullJob struct {
 // and what is in the ImageListPullJob.Spec
 // Automatically generate RBAC rules to allow the Controller to read and write ImageListPullJob
 func (r *ReconcileImageListPullJob) Reconcile(_ context.Context, request reconcile.Request) (res reconcile.Result, err error) {
-	klog.V(5).Infof("Starting to process ImageListPullJob %v", request.NamespacedName)
+	klog.V(5).InfoS("Starting to process ImageListPullJob", "imageListPullJob", request)
 
 	// 1.Fetch the ImageListPullJob instance
 	job := &appsv1alpha1.ImageListPullJob{}
@@ -155,7 +153,7 @@ func (r *ReconcileImageListPullJob) Reconcile(_ context.Context, request reconci
 		if job.Spec.CompletionPolicy.TTLSecondsAfterFinished != nil {
 			leftTime = time.Duration(*job.Spec.CompletionPolicy.TTLSecondsAfterFinished)*time.Second - time.Since(job.Status.CompletionTime.Time)
 			if leftTime <= 0 {
-				klog.Infof("Deleting ImageListPullJob %s/%s for ttlSecondsAfterFinished", job.Namespace, job.Name)
+				klog.InfoS("Deleting ImageListPullJob for ttlSecondsAfterFinished", "imageListPullJob", klog.KObj(job))
 				if err = r.Delete(context.TODO(), job); err != nil {
 					return reconcile.Result{}, fmt.Errorf("delete ImageListPullJob error: %v", err)
 				}
@@ -167,10 +165,10 @@ func (r *ReconcileImageListPullJob) Reconcile(_ context.Context, request reconci
 
 	if scaleSatisfied, unsatisfiedDuration, scaleDirtyImagePullJobs := scaleExpectations.SatisfiedExpectations(request.String()); !scaleSatisfied {
 		if unsatisfiedDuration >= expectations.ExpectationTimeout {
-			klog.Warningf("Expectation unsatisfied overtime for ImageListPullJob %v, scaleDirtyImagePullJobs=%v, overtime=%v", request.String(), scaleDirtyImagePullJobs, unsatisfiedDuration)
+			klog.InfoS("Expectation unsatisfied overtime for ImageListPullJob", "imageListPullJob", request, "scaleDirtyImagePullJobs", scaleDirtyImagePullJobs, "overtime", unsatisfiedDuration)
 			return reconcile.Result{}, nil
 		}
-		klog.V(4).Infof("Not satisfied scale for ImageListPullJob %v, scaleDirtyImagePullJobs=%v", request.String(), scaleDirtyImagePullJobs)
+		klog.V(4).InfoS("Not satisfied scale for ImageListPullJob", "imageListPullJob", request, "scaleDirtyImagePullJobs", scaleDirtyImagePullJobs)
 		return reconcile.Result{RequeueAfter: expectations.ExpectationTimeout - unsatisfiedDuration}, nil
 	}
 
@@ -185,10 +183,10 @@ func (r *ReconcileImageListPullJob) Reconcile(_ context.Context, request reconci
 		resourceVersionExpectations.Observe(imagePullJob)
 		if isSatisfied, unsatisfiedDuration := resourceVersionExpectations.IsSatisfied(imagePullJob); !isSatisfied {
 			if unsatisfiedDuration >= expectations.ExpectationTimeout {
-				klog.Warningf("Expectation unsatisfied overtime for %v, timeout=%v", request.String(), unsatisfiedDuration)
+				klog.InfoS("Expectation unsatisfied overtime for ImageListPullJob", "imageListPullJob", request, "timeout", unsatisfiedDuration)
 				return reconcile.Result{}, nil
 			}
-			klog.V(4).Infof("Not satisfied resourceVersion for %v", request.String())
+			klog.V(4).InfoS("Not satisfied resourceVersion for ImageListPullJob", "imageListPullJob", request)
 			return reconcile.Result{RequeueAfter: expectations.ExpectationTimeout - unsatisfiedDuration}, nil
 		}
 	}
@@ -377,7 +375,7 @@ func (r *ReconcileImageListPullJob) filterImagesAndImagePullJobs(job *appsv1alph
 		}
 		imagePullJob, ok := imagePullJobs[image]
 		if !ok {
-			klog.Warningf("can not found imagePullJob for image name %s", image)
+			klog.InfoS("Could not found imagePullJob for image name", "imageName", image)
 			continue
 		}
 		// should create new imagePullJob if the template is changed.
@@ -450,6 +448,6 @@ func isConsistentVersion(oldImagePullJob *appsv1alpha1.ImagePullJob, newTemplate
 		return true
 	}
 
-	klog.V(4).Infof("imagePullJob(%s/%s) specification changed", oldImagePullJob.Namespace, oldImagePullJob.Name)
+	klog.V(4).InfoS("ImagePullJob specification changed", "imagePullJob", klog.KObj(oldImagePullJob))
 	return false
 }
